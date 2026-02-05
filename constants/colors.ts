@@ -1,12 +1,53 @@
-// template
-const tintColorLight = "#2f95dc";
-
-export default {
+const Colors = {
   light: {
-    text: "#000",
-    background: "#fff",
-    tint: tintColorLight,
-    tabIconDefault: "#ccc",
-    tabIconSelected: tintColorLight,
+    primary: "#C45D3E",
+    primaryLight: "#E8A090",
+    secondary: "#D4A853",
+    secondaryLight: "#F5E6C8",
+    accent: "#2D5A4F",
+    accentLight: "#A8C5BE",
+    background: "#FDF8F3",
+    surface: "#FFFFFF",
+    surfaceSecondary: "#F5EDE6",
+    text: "#1A1A1A",
+    textSecondary: "#6B6B6B",
+    textMuted: "#9B9B9B",
+    border: "#E8E0D8",
+    tint: "#C45D3E",
+    tabIconDefault: "#9B9B9B",
+    tabIconSelected: "#C45D3E",
+    success: "#4CAF50",
+    warning: "#FF9800",
+    error: "#F44336",
+    gold: "#D4A853",
+    badge: "#C45D3E",
+  },
+  dark: {
+    primary: "#E8A090",
+    primaryLight: "#C45D3E",
+    secondary: "#F5E6C8",
+    secondaryLight: "#D4A853",
+    accent: "#A8C5BE",
+    accentLight: "#2D5A4F",
+    background: "#0D0D0D",
+    surface: "#1A1A1A",
+    surfaceSecondary: "#252525",
+    text: "#F5F5F5",
+    textSecondary: "#A0A0A0",
+    textMuted: "#6B6B6B",
+    border: "#333333",
+    tint: "#E8A090",
+    tabIconDefault: "#6B6B6B",
+    tabIconSelected: "#E8A090",
+    success: "#66BB6A",
+    warning: "#FFB74D",
+    error: "#EF5350",
+    gold: "#F5E6C8",
+    badge: "#E8A090",
   },
 };
+
+export default Colors;
+
+export type ColorScheme = keyof typeof Colors;
+export type ThemeColors = typeof Colors.light;
