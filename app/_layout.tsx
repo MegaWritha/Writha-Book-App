@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { Stack } from "expo-router";
+import { Stack, useRouter, useSegments } from "expo-router"; // Added useRouter and useSegments
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -31,8 +31,8 @@ SplashScreen.preventAutoHideAsync();
 function AuthNavigator() {
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="signup" />
       <Stack.Screen name="login" />
+      <Stack.Screen name="signup" />
     </Stack>
   );
 }
@@ -51,6 +51,9 @@ function AppNavigator() {
 }
 
 export default function RootLayout() {
+  const segments = useSegments();
+  const router = useRouter();
+
   const [fontsLoaded] = useFonts({
     Lora_400Regular,
     Lora_500Medium,
@@ -65,15 +68,14 @@ export default function RootLayout() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
 
+  // AUTH LISTENER
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
-        // Double check if the user actually exists in the system
         try {
           await currentUser.reload();
           setUser(currentUser);
         } catch (e) {
-          // If user was deleted in console but local token exists, force signout
           await signOut(auth);
           setUser(null);
         }
@@ -84,6 +86,22 @@ export default function RootLayout() {
     });
     return unsubscribe;
   }, []);
+
+  // AUTH PROTECTION REDIRECTS
+  useEffect(() => {
+    if (authLoading) return;
+
+    const inAuthGroup = segments[0] === 'login' || segments[0] === 'signup';
+    const inTabsGroup = segments[0] === '(tabs)';
+
+    if (!user && inTabsGroup) {
+      // Not logged in -> Kick to login
+      router.replace('/login');
+    } else if (user && inAuthGroup) {
+      // Logged in -> Send to app
+      router.replace('/(tabs)');
+    }
+  }, [user, authLoading, segments]);
 
   useEffect(() => {
     if (fontsLoaded && !authLoading) {
