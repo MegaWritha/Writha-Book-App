@@ -1,418 +1,392 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  Pressable,
-  TextInput,
-  Platform,
-  RefreshControl,
+  View, Text, StyleSheet, ScrollView, Image, TouchableOpacity,
+  TextInput, Dimensions, StatusBar, ActivityIndicator, Alert, FlatList, Modal
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
-import { router } from "expo-router";
-import { useTheme } from "@/contexts/ThemeContext";
-import { BookCard } from "@/components/BookCard";
-import { GenreChip } from "@/components/GenreChip";
-import { getBooks, getUser, Book, User } from "@/lib/storage";
-import * as Haptics from "expo-haptics";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import { auth, db } from "@/lib/firebase";
+import {
+  collection, query, orderBy, onSnapshot, doc,
+  setDoc, deleteDoc, serverTimestamp, increment, where, getDocs, limit, addDoc
+} from "firebase/firestore";
 
-const GENRES = [
-  "All",
-  "African Mythology",
-  "Romance",
-  "Education",
-  "Science Fiction",
-  "Poetry",
-  "Historical",
-];
+const { width } = Dimensions.get("window");
 
-export default function HomeScreen() {
-  const { colors, isDark } = useTheme();
-  const insets = useSafeAreaInsets();
-  const [books, setBooks] = useState<Book[]>([]);
-  const [user, setUser] = useState<User | null>(null);
-  const [selectedGenre, setSelectedGenre] = useState("All");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [refreshing, setRefreshing] = useState(false);
-
-  const loadData = async () => {
-    const [booksData, userData] = await Promise.all([getBooks(), getUser()]);
-    setBooks(booksData.filter((b) => b.status === "published"));
-    setUser(userData);
-  };
+// COMPONENT: BOOK ACTION GRID
+const BookActionGrid = ({ item, likedIds, onLike }: { item: any, likedIds: string[], onLike: (id: string) => void }) => {
+  const router = useRouter();
+  const [stats, setStats] = useState({ likes: 0, comments: 0, weaves: 0 });
+  const isLiked = likedIds.includes(item.id);
 
   useEffect(() => {
-    loadData();
-  }, []);
+    const unsubBook = onSnapshot(doc(db, "books", item.id), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setStats(prev => ({
+          ...prev,
+          likes: data.likesCount || 0,
+          comments: data.commentsCount || 0
+        }));
+      }
+    });
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await loadData();
-    setRefreshing(false);
-  };
+    const q = query(collection(db, "weaves"), where("bookId", "==", item.id));
+    const unsubWeaves = onSnapshot(q, (snap) => {
+      setStats(prev => ({ ...prev, weaves: snap.size }));
+    });
 
-  const filteredBooks = books.filter((book) => {
-    const matchesGenre = selectedGenre === "All" || book.genre === selectedGenre;
-    const matchesSearch =
-      searchQuery === "" ||
-      book.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      book.author.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesGenre && matchesSearch;
-  });
-
-  const trendingBooks = [...filteredBooks].sort((a, b) => b.reads - a.reads);
-  const topRatedBooks = [...filteredBooks].sort((a, b) => b.rating - a.rating);
-
-  const webTopPadding = Platform.OS === "web" ? 67 : 0;
+    return () => { unsubBook(); unsubWeaves(); };
+  }, [item.id]);
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <ScrollView
-        contentContainerStyle={[
-          styles.scrollContent,
-          { paddingTop: insets.top + webTopPadding + 16, paddingBottom: 100 },
-        ]}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
-        }
-      >
+    <View style={styles.statGrid}>
+      <View style={styles.gridBox}>
+        <TouchableOpacity onPress={() => onLike(item.id)}>
+          <Ionicons name={isLiked ? "heart" : "heart-outline"} size={22} color={isLiked ? "#FFD700" : "#A78BFA"} />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.numberFrame}>
+          <Text style={styles.gridNum}>{stats.likes}</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.gridBox}>
+        <TouchableOpacity onPress={() => router.push({ pathname: "/book/[id]/comments", params: { id: item.id } })}>
+          <Ionicons name="chatbubble-outline" size={20} color="#A78BFA" />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.numberFrame}>
+          <Text style={styles.gridNum}>{stats.comments}</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.gridBox}>
+        <TouchableOpacity onPress={() => router.push({ pathname: "/weave/create", params: { bookId: item.id, bookTitle: item.title } })}>
+          <MaterialCommunityIcons name="fountain-pen-tip" size={20} color="#FFD700" />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.numberFrame}>
+          <Text style={styles.gridNum}>{stats.weaves}</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
+export default function HomeScreen() {
+  const router = useRouter();
+  const user = auth.currentUser;
+  const firstName = user?.displayName ? user.displayName.split(" ")[0] : "Writha user";
+
+  const [books, setBooks] = useState<any[]>([]);
+  const [weaves, setWeaves] = useState<any[]>([]);
+  const [discussions, setDiscussions] = useState<any[]>([]);
+  const [likedIds, setLikedIds] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<{books: any[], users: any[], weaves: any[]} | null>(null);
+  
+  // Discussion Modal State
+  const [isModalVisible, setModalVisible] = useState(false);
+  const [newPost, setNewPost] = useState("");
+  const [posting, setPosting] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setLoading(false), 5000);
+
+    // Fetch Books
+    const unsubBooks = onSnapshot(
+      query(collection(db, "books"), limit(50)), 
+      (snap) => {
+        setBooks(snap.docs.map(d => ({ 
+          id: d.id, 
+          ...d.data(),
+          cover: d.data().coverUrl || d.data().cover,
+          trendScore: ((d.data().likesCount || 0) * 2) + (d.data().commentsCount || 0) + ((d.data().views || 0) / 10)
+        })));
+        setLoading(false);
+        clearTimeout(timer);
+      }
+    );
+
+    // Fetch Trending Weaves (Added fallback to handle missing fields)
+    const unsubWeaves = onSnapshot(
+      query(collection(db, "weaves"), limit(10)),
+      (snap) => {
+        const weaveData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        // Sort manually to avoid empty results if Firebase field is missing
+        setWeaves(weaveData.sort((a: any, b: any) => (b.likesCount || 0) - (a.likesCount || 0)));
+      }
+    );
+
+    // Fetch Random Discussions
+    const unsubDiscussions = onSnapshot(
+      query(collection(db, "discussions"), limit(20)),
+      (snap) => {
+        const discData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        // Sort manually by date
+        setDiscussions(discData.sort((a: any, b: any) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
+      }
+    );
+
+    if (user) {
+      onSnapshot(collection(db, "users", user.uid, "likedBooks"), (snap) => {
+        setLikedIds(snap.docs.map(d => d.id));
+      });
+    }
+
+    return () => { unsubBooks(); unsubWeaves(); unsubDiscussions(); clearTimeout(timer); };
+  }, [user]);
+
+  const handleSearch = async (text: string) => {
+    setSearchQuery(text);
+    if (text.trim().length === 0) { setSearchResults(null); return; }
+    const textLower = text.toLowerCase();
+    const bookHits = books.filter(b => b.title?.toLowerCase().includes(textLower) || b.genre?.toLowerCase().includes(textLower));
+
+    try {
+      const userQ = query(collection(db, "users"), where("displayName", ">=", text), where("displayName", "<=", text + "\uf8ff"), limit(5));
+      const userSnap = await getDocs(userQ);
+      const userHits = userSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      const weaveQ = query(collection(db, "weaves"), where("title", ">=", text), where("title", "<=", text + "\uf8ff"), limit(5));
+      const weaveSnap = await getDocs(weaveQ);
+      const weaveHits = weaveSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      setSearchResults({ books: bookHits, users: userHits, weaves: weaveHits });
+    } catch (e) {
+      setSearchResults({ books: bookHits, users: [], weaves: [] });
+    }
+  };
+
+  const handleLike = async (bookId: string) => {
+    if (!user) return Alert.alert("Join Writha", "Sign in to save books.");
+    const likeRef = doc(db, "users", user.uid, "likedBooks", bookId);
+    const bookRef = doc(db, "books", bookId);
+    if (likedIds.includes(bookId)) {
+      await deleteDoc(likeRef);
+      await setDoc(bookRef, { likesCount: increment(-1) }, { merge: true });
+    } else {
+      await setDoc(likeRef, { bookId, timestamp: serverTimestamp() });
+      await setDoc(bookRef, { likesCount: increment(1) }, { merge: true });
+    }
+  };
+
+  const createDiscussion = async () => {
+    if (!newPost.trim() || !user) return;
+    setPosting(true);
+    try {
+      await addDoc(collection(db, "discussions"), {
+        content: newPost,
+        userId: user.uid,
+        userName: user.displayName || "Writha User",
+        userPhoto: user.photoURL || "https://picsum.photos/100",
+        likesCount: 0,
+        commentsCount: 0,
+        createdAt: serverTimestamp(),
+      });
+      setNewPost("");
+      setModalVisible(false);
+    } catch (e) {
+      Alert.alert("Error", "Could not post discussion.");
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  const renderBookItem = ({ item }: { item: any }) => (
+    <View style={styles.bookWrap}>
+      <TouchableOpacity onPress={() => router.push({ pathname: "/book/[id]", params: { id: item.id } })} style={styles.goldFrame}>
+        <Image source={{ uri: item.cover || "https://picsum.photos/300/500" }} style={styles.cover} />
+        <div style={item.premium ? styles.paidTag : styles.freeTag}>
+          <Text style={styles.tagText}>{item.premium ? "PAID" : "FREE"}</Text>
+        </div>
+      </TouchableOpacity>
+      <Text style={styles.bTitle} numberOfLines={1}>{item.title}</Text>
+      <BookActionGrid item={item} likedIds={likedIds} onLike={handleLike} />
+    </View>
+  );
+
+  if (loading) return <View style={styles.loader}><ActivityIndicator size="large" color="#FFD700" /></View>;
+
+  const trendingBooks = [...books].sort((a, b) => b.trendScore - a.trendScore).slice(0, 10);
+  const genres = [...new Set(books.map(b => b.genre || "Other"))];
+
+  return (
+    <View style={{flex: 1, backgroundColor: "#0F071A"}}>
+      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+        <StatusBar barStyle="light-content" />
+
         <View style={styles.header}>
           <View>
-            <Text style={[styles.greeting, { color: colors.textSecondary }]}>
-              Welcome back,
-            </Text>
-            <Text style={[styles.userName, { color: colors.text }]}>
-              {user?.name?.split(" ")[0] || "Reader"}
-            </Text>
+            <Text style={styles.logo}>WRITHA</Text>
+            <Text style={styles.hello}>Hello, {firstName}</Text>
+            <Text style={styles.tagline}>Start reading manual & classic books</Text>
           </View>
-          <Pressable
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.push("/profile");
-            }}
-            style={[styles.notificationBtn, { backgroundColor: colors.surfaceSecondary }]}
-          >
-            <Ionicons name="notifications-outline" size={22} color={colors.text} />
-          </Pressable>
+          <TouchableOpacity onPress={() => router.push("/profile")}>
+            <Image source={{ uri: user?.photoURL || "https://picsum.photos/100" }} style={styles.pfp} />
+          </TouchableOpacity>
         </View>
 
-        <View style={[styles.searchContainer, { backgroundColor: colors.surfaceSecondary }]}>
-          <Ionicons name="search-outline" size={20} color={colors.textMuted} />
-          <TextInput
-            style={[styles.searchInput, { color: colors.text }]}
-            placeholder="Search books, authors..."
-            placeholderTextColor={colors.textMuted}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
-          {searchQuery.length > 0 && (
-            <Pressable onPress={() => setSearchQuery("")}>
-              <Ionicons name="close-circle" size={20} color={colors.textMuted} />
-            </Pressable>
-          )}
+        <View style={styles.searchWrap}>
+          <Ionicons name="search" size={20} color="#7C3AED" />
+          <TextInput placeholder="Search books, users, weaves..." placeholderTextColor="#6D28D9" style={styles.input} value={searchQuery} onChangeText={handleSearch} />
         </View>
 
-        <LinearGradient
-          colors={isDark ? ["#2D1B15", "#1A1A1A"] : ["#E8A090", "#FDF8F3"]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.featuredBanner}
-        >
-          <View style={styles.featuredContent}>
-            <Text style={[styles.featuredLabel, { color: isDark ? colors.secondary : colors.primary }]}>
-              Featured Story
-            </Text>
-            <Text style={[styles.featuredTitle, { color: isDark ? "#FFF" : "#1A1A1A" }]}>
-              Whispers of the{"\n"}Ancestors
-            </Text>
-            <Text style={[styles.featuredAuthor, { color: isDark ? colors.textSecondary : "#4A4A4A" }]}>
-              by Amara Okonkwo
-            </Text>
-            <Pressable
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                router.push("/book/book_1");
-              }}
-              style={[styles.featuredBtn, { backgroundColor: colors.primary }]}
-            >
-              <Text style={styles.featuredBtnText}>Start Reading</Text>
-            </Pressable>
+        {/* 1. TRENDING BOOKS */}
+        {!searchResults && trendingBooks.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.rowBetween}>
+              <Text style={styles.secTitle}>Trending Books</Text>
+              <MaterialCommunityIcons name="fire" size={24} color="#FFD700" style={{marginRight: 20}} />
+            </View>
+            <FlatList horizontal data={trendingBooks} renderItem={renderBookItem} keyExtractor={i => `trend-book-${i.id}`} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingLeft: 20 }} />
           </View>
-          <View style={styles.featuredDecor}>
-            <Ionicons name="book" size={120} color={isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)"} />
-          </View>
-        </LinearGradient>
+        )}
 
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.genresContainer}
-        >
-          {GENRES.map((genre) => (
-            <GenreChip
-              key={genre}
-              label={genre}
-              selected={selectedGenre === genre}
-              onPress={() => setSelectedGenre(genre)}
+        {/* 2. TRENDING DISCUSSIONS - UPGRADED UI */}
+        {!searchResults && discussions.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.secTitle}>Trending Discussions</Text>
+            <FlatList
+              horizontal
+              data={discussions}
+              keyExtractor={i => `disc-${i.id}`}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingLeft: 20 }}
+              renderItem={({item}) => (
+                <TouchableOpacity 
+                  style={styles.discussionCard} 
+                  onPress={() => router.push({ pathname: "/discussion/[id]", params: { id: item.id } } as any)}
+                >
+                  <View style={styles.discHeader}>
+                    <Image source={{ uri: item.userPhoto }} style={styles.discPfp} />
+                    <View>
+                      <Text style={styles.discUser}>{item.userName}</Text>
+                      <Text style={styles.discTime}>Active Community</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.discContent} numberOfLines={3}>{item.content}</Text>
+                  <View style={styles.discFooter}>
+                    <View style={styles.discStatWrap}>
+                       <Ionicons name="heart" size={14} color="#FFD700" />
+                       <Text style={styles.discStat}>{item.likesCount || 0}</Text>
+                    </View>
+                    <View style={styles.discStatWrap}>
+                       <Ionicons name="chatbubble" size={12} color="#A78BFA" />
+                       <Text style={styles.discStat}>{item.commentsCount || 0}</Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              )}
             />
-          ))}
-        </ScrollView>
-
-        {trendingBooks.length > 0 && (
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Trending Now
-              </Text>
-              <Pressable>
-                <Text style={[styles.seeAll, { color: colors.primary }]}>See All</Text>
-              </Pressable>
-            </View>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.booksRow}
-            >
-              {trendingBooks.slice(0, 5).map((book) => (
-                <BookCard key={book.id} book={book} size="medium" />
-              ))}
-            </ScrollView>
           </View>
         )}
 
-        {topRatedBooks.length > 0 && (
+        {/* 3. TRENDING WEAVES */}
+        {!searchResults && weaves.length > 0 && (
           <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Top Rated
-              </Text>
-              <Pressable>
-                <Text style={[styles.seeAll, { color: colors.primary }]}>See All</Text>
-              </Pressable>
-            </View>
-            <ScrollView
+            <Text style={styles.secTitle}>Trending Weaves</Text>
+            <FlatList
               horizontal
+              data={weaves}
+              keyExtractor={i => `trend-w-${i.id}`}
               showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.booksRow}
-            >
-              {topRatedBooks.slice(0, 5).map((book) => (
-                <BookCard key={book.id} book={book} size="medium" />
-              ))}
-            </ScrollView>
+              contentContainerStyle={{ paddingLeft: 20 }}
+              renderItem={({item}) => (
+                <TouchableOpacity style={styles.weaveCard} onPress={() => router.push(`/weave/${item.id}`)}>
+                  <MaterialCommunityIcons name="fountain-pen-tip" size={20} color="#FFD700" style={{marginBottom: 8}} />
+                  <Text style={styles.weaveTitle} numberOfLines={2}>{item.title}</Text>
+                </TouchableOpacity>
+              )}
+            />
           </View>
         )}
 
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              Continue Reading
-            </Text>
+        {/* 4. GENRES */}
+        {!searchResults && genres.map((genre) => (
+          <View style={styles.section} key={genre}>
+            <Text style={styles.secTitle}>{genre}</Text>
+            <FlatList horizontal data={books.filter(b => (b.genre || "Other") === genre)} renderItem={renderBookItem} keyExtractor={i => i.id} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingLeft: 20 }} />
           </View>
-          {books.length > 0 ? (
-            <Pressable
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                router.push("/book/book_1");
-              }}
-              style={[styles.continueCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            >
-              <View style={styles.continueProgress}>
-                <View style={[styles.progressBar, { backgroundColor: colors.surfaceSecondary }]}>
-                  <View style={[styles.progressFill, { backgroundColor: colors.primary, width: "35%" }]} />
-                </View>
-                <Text style={[styles.progressText, { color: colors.textMuted }]}>35% completed</Text>
-              </View>
-              <View style={styles.continueContent}>
-                <View style={styles.continueInfo}>
-                  <Text style={[styles.continueTitle, { color: colors.text }]} numberOfLines={1}>
-                    Whispers of the Ancestors
-                  </Text>
-                  <Text style={[styles.continueChapter, { color: colors.textSecondary }]}>
-                    Chapter 2: The Forest Speaks
-                  </Text>
-                </View>
-                <Ionicons name="play-circle" size={40} color={colors.primary} />
-              </View>
-            </Pressable>
-          ) : (
-            <View style={[styles.emptyState, { backgroundColor: colors.surfaceSecondary }]}>
-              <Ionicons name="book-outline" size={40} color={colors.textMuted} />
-              <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-                Start reading to track your progress
-              </Text>
-            </View>
-          )}
-        </View>
+        ))}
+
+        <View style={{ height: 120 }} />
       </ScrollView>
+
+      <TouchableOpacity style={styles.fab} onPress={() => setModalVisible(true)}>
+        <Ionicons name="chatbubbles" size={28} color="#000" />
+      </TouchableOpacity>
+
+      <Modal visible={isModalVisible} animationType="slide" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>New Discussion</Text>
+              <TouchableOpacity onPress={() => setModalVisible(false)}><Ionicons name="close" size={24} color="#FFF" /></TouchableOpacity>
+            </View>
+            <TextInput 
+              placeholder="What's on your mind? Start a random discussion..." 
+              placeholderTextColor="#666" 
+              multiline 
+              style={styles.modalInput} 
+              value={newPost} 
+              onChangeText={setNewPost} 
+            />
+            <TouchableOpacity style={styles.postBtn} onPress={createDiscussion} disabled={posting}>
+              {posting ? <ActivityIndicator color="#000" /> : <Text style={styles.postBtnText}>POST DISCUSSION</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: 20,
-  },
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 20,
-  },
-  greeting: {
-    fontSize: 14,
-    fontFamily: "Inter_400Regular",
-  },
-  userName: {
-    fontSize: 24,
-    fontFamily: "Inter_700Bold",
-    marginTop: 2,
-  },
-  notificationBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  searchContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    marginBottom: 20,
-    gap: 10,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 15,
-    fontFamily: "Inter_400Regular",
-  },
-  featuredBanner: {
-    borderRadius: 20,
-    padding: 24,
-    marginBottom: 24,
-    overflow: "hidden",
-    position: "relative",
-  },
-  featuredContent: {
-    flex: 1,
-    zIndex: 1,
-  },
-  featuredLabel: {
-    fontSize: 12,
-    fontFamily: "Inter_600SemiBold",
-    textTransform: "uppercase",
-    letterSpacing: 1,
-    marginBottom: 8,
-  },
-  featuredTitle: {
-    fontSize: 26,
-    fontFamily: "Lora_700Bold",
-    lineHeight: 32,
-    marginBottom: 6,
-  },
-  featuredAuthor: {
-    fontSize: 14,
-    fontFamily: "Inter_400Regular",
-    marginBottom: 16,
-  },
-  featuredBtn: {
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignSelf: "flex-start",
-  },
-  featuredBtnText: {
-    color: "#FFF",
-    fontSize: 14,
-    fontFamily: "Inter_600SemiBold",
-  },
-  featuredDecor: {
-    position: "absolute",
-    right: -20,
-    bottom: -20,
-    opacity: 0.5,
-  },
-  genresContainer: {
-    paddingBottom: 20,
-  },
-  section: {
-    marginBottom: 28,
-  },
-  sectionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontFamily: "Inter_700Bold",
-  },
-  seeAll: {
-    fontSize: 14,
-    fontFamily: "Inter_500Medium",
-  },
-  booksRow: {
-    paddingRight: 20,
-  },
-  continueCard: {
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-  },
-  continueProgress: {
-    marginBottom: 12,
-  },
-  progressBar: {
-    height: 4,
-    borderRadius: 2,
-    overflow: "hidden",
-  },
-  progressFill: {
-    height: "100%",
-    borderRadius: 2,
-  },
-  progressText: {
-    fontSize: 11,
-    fontFamily: "Inter_400Regular",
-    marginTop: 6,
-  },
-  continueContent: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  continueInfo: {
-    flex: 1,
-    marginRight: 12,
-  },
-  continueTitle: {
-    fontSize: 16,
-    fontFamily: "Inter_600SemiBold",
-    marginBottom: 4,
-  },
-  continueChapter: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-  },
-  emptyState: {
-    padding: 32,
-    borderRadius: 16,
-    alignItems: "center",
-    gap: 12,
-  },
-  emptyText: {
-    fontSize: 14,
-    fontFamily: "Inter_400Regular",
-    textAlign: "center",
-  },
+  container: { flex: 1, backgroundColor: "#0F071A" },
+  loader: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#0F071A" },
+  header: { marginTop: 60, paddingHorizontal: 20, flexDirection: 'row', justifyContent: 'space-between' },
+  logo: { color: "#FFD700", fontSize: 14, fontWeight: "900", letterSpacing: 8 },
+  hello: { color: "#FFF", fontSize: 28, fontWeight: "800", marginTop: 5 },
+  tagline: { color: "#A78BFA", fontSize: 13 },
+  pfp: { width: 45, height: 45, borderRadius: 22.5, borderWidth: 2, borderColor: "#FFD700" },
+  searchWrap: { margin: 20, backgroundColor: "#1E1135", height: 55, borderRadius: 15, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, borderWidth: 1, borderColor: '#4C1D95' },
+  input: { flex: 1, marginLeft: 10, color: '#FFF' },
+  section: { marginTop: 35 },
+  secTitle: { fontSize: 22, fontWeight: "900", color: "#FFD700", marginLeft: 20, marginBottom: 15 },
+  rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  bookWrap: { width: 150, marginRight: 20 },
+  goldFrame: { width: '100%', height: 220, borderRadius: 12, borderWidth: 2, borderColor: "#FFD700", overflow: 'hidden' },
+  cover: { width: '100%', height: '100%' },
+  bTitle: { color: '#FFF', fontWeight: 'bold', marginTop: 10, fontSize: 12 },
+  statGrid: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, backgroundColor: '#1E1135', borderRadius: 10, padding: 6, borderWidth: 1, borderColor: '#4C1D95' },
+  gridBox: { alignItems: 'center', flex: 1 },
+  numberFrame: { backgroundColor: '#0F071A', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, marginTop: 3, borderWidth: 1, borderColor: '#4C1D95' },
+  gridNum: { color: '#FFD700', fontSize: 10, fontWeight: '900' },
+  paidTag: { position: 'absolute', top: 10, right: 10, backgroundColor: '#FFD700', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 },
+  freeTag: { position: 'absolute', top: 10, right: 10, backgroundColor: '#22C55E', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 },
+  tagText: { color: '#000', fontSize: 8, fontWeight: '900' },
+  
+  // Premium Weave Cards
+  weaveCard: { backgroundColor: '#1E1135', width: 200, height: 120, padding: 15, borderRadius: 18, marginRight: 15, borderWidth: 1, borderColor: '#4C1D95', justifyContent: 'flex-start' },
+  weaveTitle: { color: '#FFF', fontSize: 14, fontWeight: '800', lineHeight: 20 },
+  
+  // Premium Discussion Cards
+  discussionCard: { backgroundColor: '#1E1135', width: 280, padding: 20, borderRadius: 24, marginRight: 15, borderWidth: 1, borderColor: '#4C1D95', shadowColor: "#000", shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.3, shadowRadius: 20 },
+  discHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+  discPfp: { width: 34, height: 34, borderRadius: 17, marginRight: 10, borderWidth: 1, borderColor: '#FFD700' },
+  discUser: { color: '#FFF', fontSize: 14, fontWeight: '900' },
+  discTime: { color: '#6D28D9', fontSize: 10, fontWeight: 'bold' },
+  discContent: { color: '#E9D5FF', fontSize: 13, lineHeight: 20, marginBottom: 15 },
+  discFooter: { flexDirection: 'row', alignItems: 'center', borderTopWidth: 1, borderTopColor: '#2D1B4E', paddingTop: 10 },
+  discStatWrap: { flexDirection: 'row', alignItems: 'center', marginRight: 20 },
+  discStat: { color: '#FFD700', fontSize: 12, marginLeft: 5, fontWeight: '800' },
+
+  fab: { position: 'absolute', bottom: 30, right: 25, width: 65, height: 65, borderRadius: 32.5, backgroundColor: '#FFD700', justifyContent: 'center', alignItems: 'center', elevation: 8 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: '#1E1135', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25, minHeight: 400 },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
+  modalTitle: { color: '#FFD700', fontSize: 18, fontWeight: '900' },
+  modalInput: { color: '#FFF', fontSize: 16, textAlignVertical: 'top', height: 150 },
+  postBtn: { backgroundColor: '#FFD700', padding: 18, borderRadius: 15, alignItems: 'center', marginTop: 20 },
+  postBtnText: { color: '#000', fontWeight: '900' }
 });

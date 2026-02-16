@@ -1,12 +1,16 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { queryClient } from "@/lib/query-client";
 import { ThemeProvider } from "@/contexts/ThemeContext";
+
+import { onAuthStateChanged, User, signOut } from "firebase/auth";
+import { auth } from "@/lib/firebase";
+
 import {
   useFonts,
   Lora_400Regular,
@@ -23,14 +27,25 @@ import {
 
 SplashScreen.preventAutoHideAsync();
 
-function RootLayoutNav() {
+// NAVIGATION FOR UNAUTHENTICATED USERS
+function AuthNavigator() {
   return (
-    <Stack screenOptions={{ headerBackTitle: "Back" }}>
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="book/[id]" options={{ headerShown: false }} />
-      <Stack.Screen name="read/[id]" options={{ headerShown: false }} />
-      <Stack.Screen name="group/[id]" options={{ headerShown: false }} />
-      <Stack.Screen name="write" options={{ headerShown: false }} />
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="signup" />
+      <Stack.Screen name="login" />
+    </Stack>
+  );
+}
+
+// NAVIGATION FOR LOGGED IN USERS
+function AppNavigator() {
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="book/[id]" />
+      <Stack.Screen name="read/[id]" />
+      <Stack.Screen name="group/[id]" />
+      <Stack.Screen name="write" />
     </Stack>
   );
 }
@@ -47,15 +62,36 @@ export default function RootLayout() {
     Inter_700Bold,
   });
 
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
   useEffect(() => {
-    if (fontsLoaded) {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        // Double check if the user actually exists in the system
+        try {
+          await currentUser.reload();
+          setUser(currentUser);
+        } catch (e) {
+          // If user was deleted in console but local token exists, force signout
+          await signOut(auth);
+          setUser(null);
+        }
+      } else {
+        setUser(null);
+      }
+      setAuthLoading(false);
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (fontsLoaded && !authLoading) {
       SplashScreen.hideAsync();
     }
-  }, [fontsLoaded]);
+  }, [fontsLoaded, authLoading]);
 
-  if (!fontsLoaded) {
-    return null;
-  }
+  if (!fontsLoaded || authLoading) return null;
 
   return (
     <ErrorBoundary>
@@ -63,7 +99,8 @@ export default function RootLayout() {
         <GestureHandlerRootView style={{ flex: 1 }}>
           <KeyboardProvider>
             <ThemeProvider>
-              <RootLayoutNav />
+              {/* This switch ensures the user ONLY sees what they are supposed to */}
+              {user ? <AppNavigator /> : <AuthNavigator />}
             </ThemeProvider>
           </KeyboardProvider>
         </GestureHandlerRootView>
