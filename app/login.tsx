@@ -11,6 +11,9 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import * as LocalAuthentication from "expo-local-authentication"; // Added back
 
+// --- NEW WEB-SAFE IMPORT ---
+import successAnimation from "../assets/images/animations/success.json";
+
 const { width } = Dimensions.get("window");
 
 export default function LoginScreen() {
@@ -144,8 +147,7 @@ export default function LoginScreen() {
       <Modal visible={loginSuccess} transparent>
         <View style={styles.successOverlay}>
           <LottieView
-            // Updated path to your renamed file success.json
-            source={require("../assets/animations/success.json")}
+            source={successAnimation} // Changed from require() to imported variable
             autoPlay
             loop={false}
             style={styles.lottie}
