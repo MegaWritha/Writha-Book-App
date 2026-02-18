@@ -1,38 +1,25 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { storage, auth } from "./firebase";
+import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
 
-export interface Settings {
-  nightMode: boolean;
-  fontSize: number;
-  fontFamily: string;
-}
+export const uploadToWrithaStorage = async (
+  uri: string, 
+  path: 'avatars' | 'covers' | 'submissions'
+): Promise<string> => {
+  const user = auth.currentUser;
+  if (!user) throw new Error("Auth required");
 
-const SETTINGS_KEY = 'writha_settings';
-const USER_KEY = 'writha_user';
+  // Mobile URI to Blob conversion
+  const blob: Blob = await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.onload = function () { resolve(xhr.response); };
+    xhr.onerror = function (e) { reject(new TypeError("Network request failed")); };
+    xhr.responseType = "blob";
+    xhr.open("GET", uri, true);
+    xhr.send(null);
+  });
 
-export const getSettings = async (): Promise<Settings> => {
-  try {
-    const s = await AsyncStorage.getItem(SETTINGS_KEY);
-    return s ? JSON.parse(s) : { nightMode: false, fontSize: 18, fontFamily: 'serif' };
-  } catch {
-    return { nightMode: false, fontSize: 18, fontFamily: 'serif' };
-  }
+  const fileRef = ref(storage, `${path}/${user.uid}/${Date.now()}`);
+  const uploadTask = await uploadBytesResumable(fileRef, blob);
+  
+  return await getDownloadURL(uploadTask.ref);
 };
-
-export const saveSettings = async (settings: Settings) => {
-  await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-};
-
-// THIS IS THE MISSING PIECE CAUSING YOUR ERROR
-export const getCurrentUser = async () => {
-  try {
-    const user = await AsyncStorage.getItem(USER_KEY);
-    return user ? JSON.parse(user) : null;
-  } catch {
-    return null;
-  }
-};
-
-export const saveUser = async (user: any) => {
-  await AsyncStorage.setItem(USER_KEY, JSON.stringify(user));
-};
-

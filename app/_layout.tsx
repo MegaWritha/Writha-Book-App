@@ -5,10 +5,12 @@ import React, { useEffect, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { FeedbackProvider } from "@/components/FeedbackProvider"; // 👈 New Import
 import { queryClient } from "@/lib/query-client";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { auth, db } from "@/lib/firebase"; 
+import { doc, getDoc } from "firebase/firestore";
 
 import {
   useFonts, Lora_400Regular, Lora_500Medium, Lora_600SemiBold, Lora_700Bold,
@@ -43,11 +45,30 @@ export default function RootLayout() {
 
     const inAuthGroup = segments[0] === 'login' || segments[0] === 'signup';
 
-    if (!user && !inAuthGroup) {
-      router.replace('/login');
-    } else if (user && inAuthGroup) {
-      router.replace('/(tabs)');
-    }
+    const checkUserStatus = async () => {
+      if (!user) {
+        if (!inAuthGroup) router.replace('/login');
+        return;
+      }
+
+      try {
+        const userDoc = await getDoc(doc(db, "users", user.uid));
+        
+        if (!userDoc.exists()) {
+          console.error("User authenticated but document missing.");
+          if (!inAuthGroup) router.replace('/signup'); 
+          return;
+        }
+
+        if (inAuthGroup) {
+          router.replace('/(tabs)');
+        }
+      } catch (err) {
+        console.error("Sync Error:", err);
+      }
+    };
+
+    checkUserStatus();
   }, [user, authLoading, segments, fontsLoaded]);
 
   useEffect(() => {
@@ -61,21 +82,19 @@ export default function RootLayout() {
   return (
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
-        <GestureHandlerRootView style={{ flex: 1 }}>
-          <KeyboardProvider>
-            <ThemeProvider>
-              <Stack screenOptions={{ headerShown: false }}>
-                <Stack.Screen name="login" />
-                <Stack.Screen name="signup" />
-                <Stack.Screen name="(tabs)" options={{ gestureEnabled: false }} />
-                {/* We removed book/[id] and others from here because 
-                   they are nested inside your tabs/folders. 
-                   This stops the "No route named exists" error.
-                */}
-              </Stack>
-            </ThemeProvider>
-          </KeyboardProvider>
-        </GestureHandlerRootView>
+        <FeedbackProvider> {/* 👈 Wrapped around GestureHandler to cover all UI */}
+          <GestureHandlerRootView style={{ flex: 1 }}>
+            <KeyboardProvider>
+              <ThemeProvider>
+                <Stack screenOptions={{ headerShown: false }}>
+                  <Stack.Screen name="login" />
+                  <Stack.Screen name="signup" />
+                  <Stack.Screen name="(tabs)" options={{ gestureEnabled: false }} />
+                </Stack>
+              </ThemeProvider>
+            </KeyboardProvider>
+          </GestureHandlerRootView>
+        </FeedbackProvider>
       </QueryClientProvider>
     </ErrorBoundary>
   );
