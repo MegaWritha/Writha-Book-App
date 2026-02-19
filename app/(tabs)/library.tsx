@@ -1,33 +1,19 @@
 import React, { useState, useEffect } from "react";
 import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  Pressable,
-  RefreshControl,
-  Image,
-  Dimensions,
-  TouchableOpacity,
-  Alert,
-  ActivityIndicator,
+  View, Text, ScrollView, StyleSheet, Pressable, RefreshControl,
+  Image, Dimensions, TouchableOpacity, Alert, ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { auth, db } from "@/lib/firebase";
 import { 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  orderBy 
+  collection, query, where, onSnapshot, orderBy 
 } from "firebase/firestore";
 import { LinearGradient } from "expo-linear-gradient";
 
 const { width } = Dimensions.get("window");
 
-// 1. FIXED TYPESCRIPT INTERFACES
 interface BookItem {
   id: string;
   bookId?: string;
@@ -35,14 +21,16 @@ interface BookItem {
   cover?: string;
   progress?: number;
   isOffline?: boolean;
-  status?: "draft" | "submitted" | "under_review" | "published" | "rejected";
+  type?: "book" | "weave" | "research";
+  status?: "draft" | "submitted" | "under_review" | "published" | "rejected" | "library";
   likesCount?: number;
   views?: number;
   authorId?: string;
   lastRead?: any;
 }
 
-type TabType = "reading" | "published" | "submissions" | "stats";
+// Restored Tab Types
+type TabType = "reading" | "drafts" | "published" | "submissions" | "stats";
 
 export default function LibraryScreen() {
   const insets = useSafeAreaInsets();
@@ -57,18 +45,17 @@ export default function LibraryScreen() {
   useEffect(() => {
     if (!user) return;
 
-    // 2. BROAD READING LIST TRACKING
+    // BROAD READING LIST TRACKING
     const unsubRead = onSnapshot(
       query(collection(db, "users", user.uid, "library"), orderBy("lastRead", "desc")),
       (snap) => {
         const books = snap.docs.map(d => ({ id: d.id, ...d.data() } as BookItem));
-        // Strict filter: only books with progress or marked offline
         setReadingList(books.filter(b => (b.progress && b.progress > 0) || b.isOffline === true));
         setLoading(false);
       }
     );
 
-    // 3. PUBLISHING & SUBMISSION TRACKING
+    // PUBLISHING & SUBMISSION TRACKING (Uses manuscripts collection)
     const unsubWorks = onSnapshot(
       query(collection(db, "manuscripts"), where("authorId", "==", user.uid)),
       (snap) => {
@@ -87,7 +74,7 @@ export default function LibraryScreen() {
   const getStatusColor = (status: string) => {
     switch (status) {
       case "draft": return "#6B7280";
-      case "submitted": return "#D4AF37"; // Gold for "Waiting for Approval"
+      case "submitted": return "#D4AF37";
       case "under_review": return "#8E2DE2";
       case "rejected": return "#EF4444";
       case "published": return "#10B981";
@@ -101,11 +88,12 @@ export default function LibraryScreen() {
       style={styles.bookCard}
       onPress={() => {
         if (item.status === "submitted" || item.status === "under_review") {
-          Alert.alert("Manuscript Locked", "This work is currently being reviewed by publishers.");
+          Alert.alert("Manuscript Locked", "This work is currently being reviewed.");
         } else if (item.status === "draft") {
-          router.push(`/write/${item.id}`);
+          // Fixed router path for TypeScript
+          router.push({ pathname: "/write", params: { id: item.id } });
         } else {
-          router.push(`/book/${item.bookId || item.id}`);
+          router.push({ pathname: "/book/[id]", params: { id: item.bookId || item.id } });
         }
       }}
     >
@@ -115,22 +103,19 @@ export default function LibraryScreen() {
           style={styles.coverImg}
         />
 
-        {/* 4. FIXED ICON NAME ERROR */}
         {item.isOffline && (
           <View style={styles.offlineBadge}>
             <MaterialCommunityIcons name="check-circle" size={16} color="#4CD964" />
           </View>
         )}
 
-        {/* 5. FIXED PROGRESS LOGIC */}
         {activeTab === "reading" && (
           <View style={styles.progressTrack}>
             <View style={[styles.progressFill, { width: `${item.progress || 0}%` }]} />
           </View>
         )}
 
-        {/* STATUS BADGE FOR SUBMISSIONS */}
-        {item.status && (activeTab === "submissions" || activeTab === "published") && (
+        {item.status && activeTab !== "reading" && (
           <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) }]}>
             <Text style={styles.statusText}>
               {item.status === "submitted" ? "AWAITING APPROVAL" : item.status.replace("_", " ").toUpperCase()}
@@ -151,18 +136,21 @@ export default function LibraryScreen() {
     </Pressable>
   );
 
-  const submissions = myWorks.filter(w => w.status !== "published");
+  // Broad Filtering Logic
+  const drafts = myWorks.filter(w => w.status === "draft");
   const published = myWorks.filter(w => w.status === "published");
+  const submissions = myWorks.filter(w => ["submitted", "under_review", "rejected"].includes(w.status as string));
 
   const currentData = 
     activeTab === "reading" ? readingList : 
-    activeTab === "published" ? published : submissions;
+    activeTab === "drafts" ? drafts :
+    activeTab === "published" ? published : 
+    activeTab === "submissions" ? submissions : [];
 
   if (loading) return <View style={styles.centered}><ActivityIndicator color="#D4AF37" /></View>;
 
   return (
     <View style={styles.container}>
-      {/* 6. FIXED LINEAR GRADIENT */}
       <LinearGradient colors={["#080212", "#05010A"]} style={StyleSheet.absoluteFill} />
 
       <View style={[styles.header, { paddingTop: insets.top + 20 }]}>
@@ -170,10 +158,10 @@ export default function LibraryScreen() {
         <Text style={styles.subTitle}>Creative Command & Submission Tracker</Text>
       </View>
 
-      {/* Tabs */}
       <View style={styles.tabBar}>
         {[
           { id: "reading", icon: "book-open-variant", label: "Reading" },
+          { id: "drafts", icon: "file-document-edit-outline", label: "Drafts" },
           { id: "published", icon: "check-decagram", label: "Live" },
           { id: "submissions", icon: "file-clock-outline", label: "Queue" },
           { id: "stats", icon: "chart-box-outline", label: "Stats" },
@@ -209,9 +197,9 @@ export default function LibraryScreen() {
 
             <View style={styles.statsGrid}>
                <StatBox label="APPROVED" val={published.length} color="#10B981" />
+               <StatBox label="DRAFTS" val={drafts.length} color="#6B7280" />
                <StatBox label="IN QUEUE" val={submissions.length} color="#D4AF37" />
-               <StatBox label="TOTAL LIKES" val={myWorks.reduce((acc, b) => acc + (b.likesCount || 0), 0)} color="#EF4444" />
-               <StatBox label="AVG PROGRESS" val="74%" color="#8E2DE2" />
+               <StatBox label="LIKES" val={myWorks.reduce((acc, b) => acc + (b.likesCount || 0), 0)} color="#EF4444" />
             </View>
           </View>
         ) : (
@@ -250,44 +238,34 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 25, marginBottom: 20 },
   libraryTitle: { color: "#FFF", fontSize: 30, fontWeight: "900", letterSpacing: -1 },
   subTitle: { color: "#D4AF37", fontSize: 11, fontWeight: "700", marginTop: 4, opacity: 0.8 },
-
   tabBar: { flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 20, marginBottom: 25 },
   tabItem: { flex: 1, paddingVertical: 12, alignItems: "center", backgroundColor: "#12081F", marginHorizontal: 4, borderRadius: 18, borderWidth: 1, borderColor: "rgba(212,175,55,0.1)" },
   activeTab: { backgroundColor: "#D4AF37", borderColor: "#D4AF37" },
-  tabLabel: { fontSize: 9, marginTop: 4, color: "#D4AF37", fontWeight: "800" },
+  tabLabel: { fontSize: 8, marginTop: 4, color: "#D4AF37", fontWeight: "800" },
   activeTabLabel: { color: "#000" },
-
   scrollContent: { paddingHorizontal: 20, paddingBottom: 150 },
   bookGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
-  
   bookCard: { width: (width - 60) / 2, marginBottom: 25 },
   coverWrapper: { width: "100%", height: 250, borderRadius: 24, overflow: "hidden", backgroundColor: "#12081F" },
   coverImg: { width: "100%", height: "100%" },
-
   offlineBadge: { position: "absolute", top: 12, right: 12, backgroundColor: "rgba(0,0,0,0.7)", padding: 6, borderRadius: 10 },
   progressTrack: { position: "absolute", bottom: 0, width: "100%", height: 5, backgroundColor: "rgba(255,255,255,0.1)" },
   progressFill: { height: "100%", backgroundColor: "#D4AF37" },
-
   statusBadge: { position: "absolute", bottom: 15, left: 10, right: 10, paddingVertical: 6, borderRadius: 12, alignItems: 'center' },
   statusText: { color: "#FFF", fontSize: 8, fontWeight: "900" },
-
   bookTitle: { color: "#FFF", fontWeight: "800", marginTop: 12, fontSize: 15 },
   bookMeta: { color: "#665B73", fontSize: 11, fontWeight: "600", marginTop: 2 },
-
   emptyBox: { width: "100%", marginTop: 100, alignItems: "center", opacity: 0.5 },
   emptyText: { color: "#665B73", fontWeight: "700", marginTop: 15 },
-
   statsPanel: { gap: 20 },
   panelTitle: { color: "#D4AF37", fontSize: 10, fontWeight: "900", letterSpacing: 2 },
   mainStatCard: { backgroundColor: "#12081F", padding: 35, borderRadius: 32, alignItems: 'center', borderWidth: 1, borderColor: "rgba(212,175,55,0.1)" },
   mainStatVal: { color: "#FFF", fontSize: 48, fontWeight: "900" },
   mainStatLabel: { color: "#D4AF37", fontSize: 10, fontWeight: "800", marginTop: 5 },
-  
   statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 15 },
   statTile: { width: (width - 55) / 2, backgroundColor: "#12081F", padding: 22, borderRadius: 28, alignItems: 'center' },
   statTileVal: { fontSize: 24, fontWeight: "900" },
   statTileLabel: { color: "#665B73", fontSize: 9, fontWeight: "800", marginTop: 4 },
-
   fab: { position: "absolute", bottom: 40, right: 25, width: 70, height: 70, borderRadius: 24, overflow: 'hidden', elevation: 10 },
   fabGradient: { flex: 1, justifyContent: "center", alignItems: "center" }
 });

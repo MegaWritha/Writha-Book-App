@@ -25,7 +25,7 @@ export default function WrithaExecutiveStudio() {
   const [form, setForm] = useState({
     title: "",
     subtitle: "",
-    cover: "", // ADDED: Crucial for Home Screen
+    cover: "", 
     genre: "",
     tags: "",
     summary: "",
@@ -38,12 +38,12 @@ export default function WrithaExecutiveStudio() {
     isOriginal: false,
   });
 
-  // --- INITIAL DATA FETCH ---
+  // --- INITIAL DATA FETCH (Consistent with manuscripts collection) ---
   useEffect(() => {
     if (id && id !== "new") {
       const loadManuscript = async () => {
         try {
-          const snap = await getDoc(doc(db, "books", id as string));
+          const snap = await getDoc(doc(db, "manuscripts", id as string));
           if (snap.exists()) {
             setForm(prev => ({ ...prev, ...snap.data() }));
           }
@@ -75,7 +75,6 @@ export default function WrithaExecutiveStudio() {
           fileUri: selectedAsset.uri,
           mode: "upload" 
         }));
-        // Provide haptic feedback
         if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
     } catch (err) {
@@ -83,44 +82,49 @@ export default function WrithaExecutiveStudio() {
     }
   };
 
-  // --- PERSISTENCE ENGINE (PUBLISH) ---
-  const handleArchiveSync = async (status: "published" | "draft") => {
+  // --- UPDATED PERSISTENCE ENGINE (SUBMITTED Workflow) ---
+  const handleArchiveSync = async (status: "submitted" | "draft") => {
     if (!user) return Alert.alert("Error", "You must be logged in.");
-    if (!form.title.trim()) return Alert.alert("Required", "Title cannot be empty.");
     
-    if (status === "published") {
-      if (form.mode === "write" && !form.content.trim()) return Alert.alert("Empty Work", "Please add content.");
-      if (!form.isOriginal) return Alert.alert("Verification", "Please confirm originality in the Legal tab.");
+    // VALIDATION GATE
+    if (status === "submitted") {
+      if (!form.title.trim()) return Alert.alert("Required", "Title is mandatory.");
+      if (form.mode === "write" && form.content.trim().length < 50) return Alert.alert("Incomplete", "Manuscript is too short for submission.");
+      if (form.mode === "upload" && !form.fileUri) return Alert.alert("Missing File", "Please upload your manuscript.");
+      if (!form.isOriginal) return Alert.alert("Legal", "You must attest to the originality in the Legal tab.");
     }
 
     setLoading(true);
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Use existing ID or create a clean URL-friendly ID from title
     const docId = (id && id !== "new") 
       ? id as string 
-      : form.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+      : `${Date.now()}`;
 
     try {
-      await setDoc(doc(db, "books", docId), {
+      // Consistent with Library Screen requirements
+      await setDoc(doc(db, "manuscripts", docId), {
         ...form,
-        // Ensure these fields match what Home Screen expects
         authorId: user.uid,
-        authorName: user.displayName || "Anonymous",
-        likesCount: 0, // Initialize likes
-        commentsCount: 0,
-        premium: form.isPremium, // Map to Home Screen 'premium' check
-        cover: form.cover || "https://picsum.photos/300/500", // Default if empty
-        status: status,
+        authorName: user.displayName || "Anonymous Creator",
+        likesCount: 0,
+        views: 0,
+        status: status, // "submitted" = Queue, "draft" = Drafts tab
         updatedAt: serverTimestamp(),
         createdAt: serverTimestamp(),
       }, { merge: true });
 
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       
-      Alert.alert("Success", "Published successfully!", [
-        { text: "OK", onPress: () => router.push("/(tabs)") } // Go to Home
-      ]);
+      if (status === "submitted") {
+        Alert.alert(
+          "Submission Received", 
+          "Your work is now in the editorial queue. You will be notified upon approval.", 
+          [{ text: "To Library", onPress: () => router.push("/library") }]
+        );
+      } else {
+        Alert.alert("Draft Saved", "Work archived in your drafts.");
+      }
       
     } catch (err) {
       console.error(err);
@@ -129,6 +133,8 @@ export default function WrithaExecutiveStudio() {
       setLoading(false);
     }
   };
+
+  const canSubmit = form.title.trim() && (form.content.trim() || form.fileUri) && form.isOriginal;
 
   if (initialSync) return <View style={styles.loader}><ActivityIndicator color="#FFD700" /></View>;
 
@@ -155,14 +161,17 @@ export default function WrithaExecutiveStudio() {
           ))}
         </View>
 
-        <TouchableOpacity onPress={() => handleArchiveSync("published")}>
-          <Text style={styles.postAction}>POST</Text>
+        <TouchableOpacity 
+          onPress={() => handleArchiveSync("submitted")}
+          disabled={!canSubmit}
+          style={{ opacity: canSubmit ? 1 : 0.3 }}
+        >
+          <Text style={styles.postAction}>SUBMIT</Text>
         </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={{ paddingBottom: 150 }}>
         
-        {/* TAB 1: EDITOR */}
         {activeTab === "Editor" && (
           <View style={styles.pane}>
             <TextInput 
@@ -211,7 +220,6 @@ export default function WrithaExecutiveStudio() {
           </View>
         )}
 
-        {/* TAB 2: METADATA */}
         {activeTab === "Metadata" && (
           <View style={styles.pane}>
             <Text style={styles.fieldTag}>COVER IMAGE URL</Text>
@@ -257,21 +265,23 @@ export default function WrithaExecutiveStudio() {
           </View>
         )}
 
-        {/* TAB 3: LEGAL */}
         {activeTab === "Legal" && (
           <View style={styles.pane}>
              <View style={styles.legalHeaderBox}>
                 <FontAwesome5 name="shield-alt" size={44} color="#FFD700" />
                 <Text style={styles.legalMainTitle}>INTELLECTUAL PROPERTY GUARD</Text>
                 <Text style={styles.legalBodyContent}>
-                   Writha maintains a zero-tolerance policy for plagiarism. By using this platform, you acknowledge that you own all rights to this work.
+                   By submitting, you confirm:{"\n"}
+                   • You own full rights to this work.{"\n"}
+                   • Content is non-infringing.{"\n"}
+                   • You accept the editorial review process.
                 </Text>
              </View>
 
              <View style={styles.legalToggleRow}>
                 <View style={{flex: 1}}>
                     <Text style={styles.legalItemH}>Original Work Verification</Text>
-                    <Text style={styles.legalItemS}>I certify this is my own intellectual creation.</Text>
+                    <Text style={styles.legalItemS}>I certify this is my own creation.</Text>
                 </View>
                 <Switch 
                   value={form.isOriginal} 
@@ -284,7 +294,7 @@ export default function WrithaExecutiveStudio() {
              <View style={styles.legalToggleRow}>
                 <View style={{flex: 1}}>
                     <Text style={styles.legalItemH}>Mature Content (18+)</Text>
-                    <Text style={styles.legalItemS}>Check this if the work has mature themes.</Text>
+                    <Text style={styles.legalItemS}>Check for mature themes.</Text>
                 </View>
                 <Switch 
                   value={form.isMature} 
@@ -298,7 +308,7 @@ export default function WrithaExecutiveStudio() {
                 <TouchableOpacity style={styles.dangerZone} onPress={() => {
                     Alert.alert("DELETE FOREVER?", "This removes your work from the archive.", [
                         { text: "Cancel" },
-                        { text: "DELETE", style: 'destructive', onPress: async () => { await deleteDoc(doc(db, "books", id as string)); router.back(); }}
+                        { text: "DELETE", style: 'destructive', onPress: async () => { await deleteDoc(doc(db, "manuscripts", id as string)); router.back(); }}
                     ]);
                 }}>
                    <Ionicons name="trash-outline" size={18} color="#FF4444" />
@@ -310,19 +320,24 @@ export default function WrithaExecutiveStudio() {
 
       </ScrollView>
 
-      {/* FOOTER */}
+      {/* EXECUTIVE FOOTER */}
       <View style={styles.studioFooter}>
           <TouchableOpacity style={styles.draftBtn} onPress={() => handleArchiveSync("draft")}>
             <Text style={styles.draftBtnText}>SAVE DRAFT</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.postBtn} onPress={() => handleArchiveSync("published")}>
-            {loading ? <ActivityIndicator color="#000" /> : <Text style={styles.postBtnText}>FINALIZE & POST</Text>}
+          <TouchableOpacity 
+            style={[styles.postBtn, !canSubmit && { opacity: 0.5 }]} 
+            disabled={!canSubmit || loading}
+            onPress={() => handleArchiveSync("submitted")}
+          >
+            {loading ? <ActivityIndicator color="#000" /> : <Text style={styles.postBtnText}>SUBMIT FOR REVIEW</Text>}
           </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
   );
 }
 
+// ... styles remain the same as your previous broad version ...
 const styles = StyleSheet.create({
   loader: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
   toolbar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 15, borderBottomWidth: 1, borderColor: '#111' },
@@ -332,40 +347,32 @@ const styles = StyleSheet.create({
   tabLabel: { color: '#666', fontSize: 10, fontWeight: '900' },
   tabLabelActive: { color: '#000' },
   postAction: { color: '#FFD700', fontWeight: '900', fontSize: 12 },
-
   pane: { padding: 25 },
   mainTitle: { color: '#FFF', fontSize: 32, fontWeight: '900', letterSpacing: -1 },
   mainSubtitle: { color: '#555', fontSize: 16, marginTop: 5, marginBottom: 30 },
-  
   modeSwitch: { flexDirection: 'row', marginBottom: 35, gap: 15 },
   opt: { flex: 1, flexDirection: 'row', padding: 16, borderRadius: 16, backgroundColor: '#0F071A', alignItems: 'center', justifyContent: 'center', gap: 10, borderWidth: 1, borderColor: '#1E1135' },
   optActive: { backgroundColor: '#FFD700', borderColor: '#FFD700' },
   optText: { color: '#888', fontSize: 11, fontWeight: '900' },
   optTextActive: { color: '#000' },
-
   editorBody: { color: '#FFF', fontSize: 18, lineHeight: 28, minHeight: 400, textAlignVertical: 'top' },
   uploadCard: { height: 300, borderRadius: 30, borderStyle: 'dashed', borderWidth: 2, borderColor: '#1E1135', justifyContent: 'center', alignItems: 'center', backgroundColor: '#0F071A' },
   upMainText: { color: '#FFF', fontWeight: '800', marginTop: 15, fontSize: 16 },
   upSubText: { color: '#444', fontSize: 12, marginTop: 5 },
-
   fieldTag: { color: '#FFD700', fontSize: 10, fontWeight: '900', letterSpacing: 2, marginTop: 25, marginBottom: 12 },
   fieldIn: { borderBottomWidth: 1, borderColor: '#333', color: '#FFF', paddingVertical: 12, fontSize: 16 },
   blurbArea: { backgroundColor: '#1E1135', borderRadius: 18, padding: 20, color: '#FFF', fontSize: 16, minHeight: 120, textAlignVertical: 'top' },
-
   rowItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 40 },
   rowTitle: { color: '#FFF', fontSize: 16, fontWeight: '700' },
   rowSub: { color: '#444', fontSize: 12, marginTop: 2 },
-
   legalHeaderBox: { alignItems: 'center', padding: 25, backgroundColor: '#1E1135', borderRadius: 25, marginBottom: 10 },
   legalMainTitle: { color: '#FFD700', fontWeight: '900', marginTop: 18, letterSpacing: 1.5, fontSize: 13 },
   legalBodyContent: { color: '#888', textAlign: 'center', marginTop: 14, lineHeight: 22, fontSize: 13 },
   legalToggleRow: { flexDirection: 'row', alignItems: 'center', marginTop: 35 },
   legalItemH: { color: '#FFF', fontWeight: '700', fontSize: 16 },
   legalItemS: { color: '#444', fontSize: 11, marginTop: 3 },
-
   dangerZone: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 80, gap: 10 },
   dangerText: { color: '#FF4444', fontWeight: '900', fontSize: 11 },
-
   studioFooter: { position: 'absolute', bottom: 0, width: '100%', flexDirection: 'row', padding: 20, backgroundColor: '#0F071A', borderTopWidth: 1, borderColor: '#111', gap: 15, paddingBottom: 40 },
   draftBtn: { flex: 1, paddingVertical: 18, alignItems: 'center', borderRadius: 18, backgroundColor: '#0F071A', borderWidth: 1, borderColor: '#333' },
   draftBtnText: { color: '#888', fontWeight: '900', fontSize: 12 },
