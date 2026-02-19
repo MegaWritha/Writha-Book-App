@@ -1,6 +1,28 @@
 import { storage, auth } from "./firebase";
 import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
 
+// --- 1. THE MISSING DEFINITION (This fixes the BookCard error) ---
+export interface Book {
+  id: string;
+  title: string;
+  author: string;
+  cover: string;
+  price?: number;
+  isPaid: boolean;
+  status: 'draft' | 'published';
+  reads: number;
+  likes: number;
+  rating: number;
+  userId?: string; // Important for checking who owns the book
+}
+
+// --- 2. THE MISSING UTILITY (This fixes the formatNumber error) ---
+export const formatNumber = (num: number = 0) => {
+  if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
+  return num.toString();
+};
+
+// --- 3. YOUR EXISTING UPLOAD CODE ---
 export const uploadToWrithaStorage = async (
   uri: string, 
   path: 'avatars' | 'covers' | 'submissions'
@@ -8,7 +30,6 @@ export const uploadToWrithaStorage = async (
   const user = auth.currentUser;
   if (!user) throw new Error("Auth required");
 
-  // Mobile URI to Blob conversion
   const blob: Blob = await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.onload = function () { resolve(xhr.response); };

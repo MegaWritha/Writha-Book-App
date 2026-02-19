@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import {
   View, Text, StyleSheet, ScrollView, Image, TouchableOpacity,
   TextInput, Dimensions, StatusBar, ActivityIndicator, Alert, FlatList, Modal,
-  KeyboardAvoidingView, Platform, Switch
+  KeyboardAvoidingView, Platform, Switch, Keyboard
 } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -11,7 +11,7 @@ import { useRouter } from "expo-router";
 import { auth, db } from "../../lib/firebase";
 import { 
   collection, query, onSnapshot, doc, limit, 
-  orderBy, addDoc, serverTimestamp 
+  orderBy, addDoc, serverTimestamp, updateDoc, increment 
 } from "firebase/firestore";
 import { useFeedback } from "../../components/FeedbackProvider"; 
 import { WrithaButton } from "../../components/WrithaButton";    
@@ -53,10 +53,20 @@ export default function HomeScreen() {
   const [posting, setPosting] = useState(false);
   const [publishToWeb, setPublishToWeb] = useState(false);
 
+  // Group books by genre dynamically
+  const groupedBooks = useMemo(() => {
+    const groups: { [key: string]: any[] } = {};
+    books.forEach(book => {
+      const genre = book.genre || "Other";
+      if (!groups[genre]) groups[genre] = [];
+      groups[genre].push(book);
+    });
+    return groups;
+  }, [books]);
+
   useEffect(() => {
     if (!user) return;
 
-    // 1. Profile Sync - Tightened with Nullish Coalescing
     const unsubProfile = onSnapshot(doc(db, "users", user.uid), (snap) => {
       if (snap.exists()) {
         const data = snap.data();
@@ -64,10 +74,8 @@ export default function HomeScreen() {
       }
     });
 
-    // 2. Data Streams
-    const unsubBooks = onSnapshot(query(collection(db, "publications"), limit(10)), (snap) => {
+    const unsubBooks = onSnapshot(query(collection(db, "books"), limit(20)), (snap) => {
       const bookList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      console.log("Books fetched:", bookList.length); // Debugging aid for your laptop
       setBooks(bookList);
     });
 
@@ -87,10 +95,19 @@ export default function HomeScreen() {
     return () => { unsubProfile(); unsubBooks(); unsubWeaves(); unsubGroups(); unsubDisc(); };
   }, [user]);
 
+  const handleLikeBook = async (bookId: string) => {
+    try {
+      const bookRef = doc(db, "books", bookId);
+      await updateDoc(bookRef, { likesCount: increment(1) });
+      showFeedback("Liked!", "success");
+    } catch (e) {
+      showFeedback("Error liking book", "error");
+    }
+  };
+
   const handlePublishPost = async () => {
     if (!newPost.trim()) return;
     setPosting(true);
-    
     try {
       await addDoc(collection(db, "discussions"), {
         content: newPost,
@@ -102,13 +119,11 @@ export default function HomeScreen() {
         publishToWeb: publishToWeb,
         createdAt: serverTimestamp() 
       });
-      
       showFeedback(publishToWeb ? "Published to App & Web!" : "Discussion published!", "success");
       setNewPost("");
       setPublishToWeb(false);
       setModalVisible(false);
     } catch (e) {
-      console.error(e);
       showFeedback("Failed to post", "error");
     } finally {
       setPosting(false);
@@ -119,13 +134,47 @@ export default function HomeScreen() {
     const q = searchQuery.toLowerCase();
     const filtered = books.filter(b => b.title?.toLowerCase().includes(q) || b.genre?.toLowerCase().includes(q));
     setSearchResults(filtered);
+    Keyboard.dismiss();
+  };
+
+  const resetSearch = () => {
+    setSearchResults(null);
+    setSearchQuery("");
   };
 
   const openFullResearchForm = () => {
     setFabMenuOpen(false);
-    // @ts-ignore - Route will exist once we create create.tsx
     router.push("/create"); 
   };
+
+  const renderBookItem = ({ item }: { item: any }) => (
+    <View style={styles.bookWrapper}>
+      <TouchableOpacity onPress={() => router.push(`/book/${item.id}`)}>
+        <View style={styles.goldBorder}>
+          <Image source={{ uri: item.coverUrl || item.cover || "https://picsum.photos/200/300" }} style={styles.bookCover} />
+          <View style={styles.priceTag}>
+            <Text style={styles.priceText}>{item.price > 0 ? `$${item.price}` : "FREE"}</Text>
+          </View>
+        </View>
+        <Text style={styles.bookTitle} numberOfLines={1}>{item.title}</Text>
+      </TouchableOpacity>
+      <View style={styles.bookActionRow}>
+        <TouchableOpacity style={styles.actionIcon} onPress={() => router.push(`/book/${item.id}`)}>
+          <Ionicons name="heart-outline" size={16} color="#e70505" />
+          <Text style={styles.actionText}>{item.likesCount || 0}</Text>
+        </TouchableOpacity>
+        {/* REDIRECTED TO COMMENTS.TSX */}
+        <TouchableOpacity style={styles.actionIcon} onPress={() => router.push(`/book/${item.id}/comments`)}>
+          <Ionicons name="chatbubble-outline" size={16} color="#A78BFA" />
+          <Text style={styles.actionText}>Comments</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.actionIcon} onPress={() => router.push(`/weave/${item.id}`)}>
+          <MaterialCommunityIcons name="pencil-outline" size={16} color="#FFD700" />
+          <Text style={styles.actionText}>Weave</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
 
   if (loading) return <View style={styles.center}><ActivityIndicator size="large" color="#FFD700" /></View>;
 
@@ -133,7 +182,6 @@ export default function HomeScreen() {
     <View style={styles.mainContainer}>
       <StatusBar barStyle="light-content" />
       
-      {/* HEADER */}
       <View style={styles.header}>
         <View>
           <Text style={styles.logoText}>WRITHA</Text>
@@ -148,7 +196,6 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* SEARCH TAB */}
       <View style={styles.searchBox}>
         <Ionicons name="search" size={20} color="#7C3AED" />
         <TextInput 
@@ -160,7 +207,7 @@ export default function HomeScreen() {
           onSubmitEditing={handleSearch}
         />
         {searchResults && (
-          <TouchableOpacity onPress={() => setSearchResults(null)}>
+          <TouchableOpacity onPress={resetSearch}>
             <Ionicons name="close-circle" size={22} color="#FFF" />
           </TouchableOpacity>
         )}
@@ -170,22 +217,21 @@ export default function HomeScreen() {
         {searchResults ? (
           <View style={styles.section}>
             <SectionHeader title="Search Results" />
-            <TouchableOpacity style={styles.backBtn} onPress={() => setSearchResults(null)}>
+            <TouchableOpacity style={styles.backBtn} onPress={resetSearch}>
               <Text style={styles.backBtnTxt}>← Back to Feed</Text>
             </TouchableOpacity>
-            {searchResults.length === 0 && <EmptyState title="No matches" message="No books found for that search." />}
-            {searchResults.map(b => (
-              <TouchableOpacity key={b.id} style={styles.searchItem} onPress={() => router.push(`/book/${b.id}`)}>
-                <Image source={{ uri: b.coverUrl || b.cover }} style={styles.resImg} />
-                <View><Text style={styles.resTitle}>{b.title}</Text><Text style={styles.resGenre}>{b.genre || b.type}</Text></View>
-              </TouchableOpacity>
-            ))}
+            {searchResults.length === 0 && <EmptyState title="No matches" message="No books found." />}
+            <FlatList 
+              horizontal data={searchResults}
+              renderItem={renderBookItem}
+              keyExtractor={(item) => `search-${item.id}`}
+            />
           </View>
         ) : (
           <>
             {/* 1. TRENDING WEAVES */}
             <View style={styles.section}>
-              <SectionHeader title="Trending Weaves" />
+              <SectionHeader title="Trending Weaves" onSeeAll={() => {}} />
               {weaves.length === 0 ? <EmptyState title="No weaves" message="No collaborative weaves active." /> : (
                 <FlatList 
                   horizontal data={weaves} showsHorizontalScrollIndicator={false}
@@ -203,46 +249,28 @@ export default function HomeScreen() {
               )}
             </View>
 
-            {/* 2. TRENDING BOOKS - UPDATED WITH PRICE TAG */}
+            {/* 2. TRENDING BOOKS */}
             <View style={styles.section}>
-              <SectionHeader title="Trending Books" />
+              <SectionHeader title="Trending Books" onSeeAll={() => {}} />
               {books.length === 0 ? <EmptyState title="No books yet" message="Be the first to publish a masterpiece." /> : (
                 <FlatList 
                   horizontal data={books} showsHorizontalScrollIndicator={false}
                   contentContainerStyle={{paddingLeft: 20}}
-                  renderItem={({item}) => (
-                    <View style={styles.bookWrapper}>
-                      <TouchableOpacity onPress={() => router.push(`/book/${item.id}`)}>
-                        <View style={styles.goldBorder}>
-                          <Image source={{ uri: item.coverUrl || item.cover || "https://picsum.photos/200/300" }} style={styles.bookCover} />
-                          {/* Price Tag Overlay */}
-                          <View style={styles.priceTag}>
-                            <Text style={styles.priceText}>{item.price > 0 ? `$${item.price}` : "FREE"}</Text>
-                          </View>
-                        </View>
-                        <Text style={styles.bookTitle} numberOfLines={1}>{item.title}</Text>
-                      </TouchableOpacity>
-                      <View style={styles.bookActionRow}>
-                        <TouchableOpacity style={styles.actionIcon}><Ionicons name="heart-outline" size={16} color="#FF4D4D" /><Text style={styles.actionText}>Like</Text></TouchableOpacity>
-                        <TouchableOpacity style={styles.actionIcon} onPress={() => router.push(`/book/${item.id}`)}><Ionicons name="chatbubble-outline" size={16} color="#A78BFA" /><Text style={styles.actionText}>Comment</Text></TouchableOpacity>
-                        <TouchableOpacity style={styles.actionIcon} onPress={() => router.push(`/weave/${item.id}`)}><Ionicons name="pencil-outline" size={16} color="#FFD700" /><Text style={styles.actionText}>Weave</Text></TouchableOpacity>
-                      </View>
-                    </View>
-                  )}
+                  renderItem={renderBookItem}
                 />
               )}
             </View>
 
             {/* 3. TRENDING DISCUSSIONS */}
             <View style={styles.section}>
-              <SectionHeader title="Trending Discussions" />
+              <SectionHeader title="Trending Discussions" onSeeAll={() => {}} />
               {discussions.length === 0 ? (
                 <EmptyState title="Quiet here..." message="The weave is quiet... start a discussion!" />
               ) : (
                 <View style={styles.bubbleGrid}>
                   {discussions.map((item) => (
                     <View key={item.id} style={styles.bubbleCard}>
-                      <TouchableOpacity onPress={() => router.push(`/discussion/${item.id}`)}>
+                      <TouchableOpacity onPress={() => router.push(`/create`)}>
                         <View style={styles.bubbleHeader}>
                           <Image source={{ uri: item.userPhoto || "https://picsum.photos/50" }} style={styles.bubblePfp} />
                           <Text style={styles.bubbleUser} numberOfLines={1}>{item.userName}</Text>
@@ -251,7 +279,7 @@ export default function HomeScreen() {
                       </TouchableOpacity>
                       <View style={styles.interactRow}>
                         <TouchableOpacity style={styles.iconBtn}><Ionicons name="heart-outline" size={14} color="#FF4D4D" /><Text style={styles.iconCount}>{item.likesCount || 0}</Text></TouchableOpacity>
-                        <TouchableOpacity style={styles.iconBtn} onPress={() => router.push(`/discussion/${item.id}`)}><Ionicons name="chatbubble-outline" size={14} color="#A78BFA" /><Text style={styles.iconCount}>{item.commentsCount || 0}</Text></TouchableOpacity>
+                        <TouchableOpacity style={styles.iconBtn} onPress={() => router.push(`/create`)}><Ionicons name="chatbubble-outline" size={14} color="#A78BFA" /><Text style={styles.iconCount}>{item.commentsCount || 0}</Text></TouchableOpacity>
                       </View>
                     </View>
                   ))}
@@ -259,28 +287,21 @@ export default function HomeScreen() {
               )}
             </View>
 
-            {/* 4. BOOKS (GENRE) */}
-            <View style={styles.section}>
-              <SectionHeader title="Books (Genre)" />
-              {books.length === 0 ? <EmptyState title="No genres yet" message="Check back later." /> : (
+            {/* 4. DYNAMIC GENRE SECTIONS (ROMANCE, SCI-FI, ETC) */}
+            {Object.keys(groupedBooks).map((genre) => (
+              <View key={genre} style={styles.section}>
+                <SectionHeader title={genre} onSeeAll={() => {}} />
                 <FlatList 
-                  horizontal data={books} showsHorizontalScrollIndicator={false}
+                  horizontal data={groupedBooks[genre]} showsHorizontalScrollIndicator={false}
                   contentContainerStyle={{paddingLeft: 20}}
-                  renderItem={({item}) => (
-                    <TouchableOpacity style={styles.genreBookWrapper} onPress={() => router.push(`/book/${item.id}`)}>
-                      <Image source={{ uri: item.coverUrl || item.cover || "https://picsum.photos/200/300" }} style={styles.genreBookCover} />
-                      <View style={styles.genreTagBox}>
-                        <Text style={styles.genreTagText}>{item.genre || item.type || "Fiction"}</Text>
-                      </View>
-                    </TouchableOpacity>
-                  )}
+                  renderItem={renderBookItem}
                 />
-              )}
-            </View>
+              </View>
+            ))}
             
             {/* 5. ACTIVE GROUPS */}
             <View style={styles.section}>
-              <SectionHeader title="Active Groups" />
+              <SectionHeader title="Active Groups" onSeeAll={() => {}} />
               {groups.length === 0 ? <EmptyState title="No groups" message="Join a group to start a community." /> : (
                 <FlatList 
                   horizontal data={groups} showsHorizontalScrollIndicator={false}
@@ -304,7 +325,6 @@ export default function HomeScreen() {
         )}
       </ScrollView>
 
-      {/* FAB MENU */}
       {isFabMenuOpen && (
         <View style={styles.fabMenu}>
           <TouchableOpacity style={styles.fabMenuItem} onPress={openFullResearchForm}>
@@ -322,7 +342,6 @@ export default function HomeScreen() {
         <MaterialCommunityIcons name={isFabMenuOpen ? "close" : "pencil-plus"} size={30} color="#000" />
       </TouchableOpacity>
 
-      {/* RANDOM DISCUSSION MODAL */}
       <Modal visible={isModalVisible} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
           <View style={styles.modalBody}>
@@ -377,10 +396,6 @@ const styles = StyleSheet.create({
   bookActionRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, paddingHorizontal: 5 },
   actionIcon: { alignItems: 'center' },
   actionText: { color: '#A78BFA', fontSize: 9, marginTop: 2 },
-  genreBookWrapper: { width: 110, marginRight: 15 },
-  genreBookCover: { width: 110, height: 150, borderRadius: 8 },
-  genreTagBox: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(76, 29, 149, 0.9)', padding: 5, borderBottomLeftRadius: 8, borderBottomRightRadius: 8 },
-  genreTagText: { color: '#FFF', fontSize: 10, fontWeight: 'bold', textAlign: 'center', textTransform: 'uppercase' },
   groupCard: { alignItems: 'center', marginRight: 20, width: 80 },
   groupImg: { width: 65, height: 65, borderRadius: 32.5, borderWidth: 2, borderColor: '#A78BFA' },
   groupName: { color: '#FFF', marginTop: 8, fontSize: 11, fontWeight: 'bold', textAlign: 'center' },
@@ -400,10 +415,6 @@ const styles = StyleSheet.create({
   interactRow: { flexDirection: 'row', marginTop: 10, borderTopWidth: 0.5, borderTopColor: '#333', paddingTop: 8 },
   iconBtn: { flexDirection: 'row', alignItems: 'center', marginRight: 15 },
   iconCount: { color: '#888', fontSize: 10, marginLeft: 4 },
-  searchItem: { flexDirection: 'row', padding: 15, backgroundColor: '#1E1135', marginHorizontal: 20, borderRadius: 12, marginBottom: 10 },
-  resImg: { width: 40, height: 60, borderRadius: 4, marginRight: 15 },
-  resTitle: { color: '#FFF', fontWeight: 'bold' },
-  resGenre: { color: '#FFD700', fontSize: 10 },
   fab: { position: 'absolute', bottom: 30, right: 25, backgroundColor: '#FFD700', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 5, zIndex: 100 },
   fabMenu: { position: 'absolute', bottom: 100, right: 25, alignItems: 'flex-end', zIndex: 99 },
   fabMenuItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
