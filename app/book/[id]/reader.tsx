@@ -310,7 +310,7 @@ const styles = StyleSheet.create({
   mainContainer: { flex: 1 },
   loadingScreen: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   loadingText: { color: '#FFD700', marginTop: 25, fontWeight: '900', letterSpacing: 4, fontSize: 10 },
-  floatingToggle: { position: 'absolute', right: 20, bottom: 120, width: 56, height: 56, borderRadius: 28, borderWidth: 2, justifyContent: 'center', alignItems: 'center', zIndex: 999, elevation: 5 },
+  floatingToggle: { position: 'absolute', right: 20, bottom: 120, width: 40, height: 56, borderRadius: 20, borderWidth: 2, justifyContent: 'center', alignItems: 'center', zIndex: 999, elevation: 5 },
   topPanel: { position: 'absolute', top: 0, width: '100%', height: 140, zIndex: 100, paddingTop: 55 },
   topActionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 25, marginBottom: 5 },
   goalBanner: { alignItems: 'center', marginBottom: 10 },
@@ -344,6 +344,6 @@ const styles = StyleSheet.create({
   footerActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   themePalette: { flexDirection: 'row', width: 180, justifyContent: 'space-between' },
   themeDot: { width: 34, height: 34, borderRadius: 17 },
-  weaveButton: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 30, paddingVertical: 18, borderRadius: 35 },
-  weaveText: { color: '#000', fontWeight: '900', marginLeft: 15, fontSize: 15, letterSpacing: 2 }
+  weaveButton: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 20 },
+  weaveText: { color: '#000', fontWeight: '900', marginLeft: 15, fontSize: 12, letterSpacing: 2 }
 });
