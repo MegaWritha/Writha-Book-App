@@ -39,6 +39,14 @@ const getFriendlyError = (code: string) => {
   }
 };
 
+// Helper to format date as "20/Jan/2002"
+const formatDisplayDate = (dateString: string) => {
+  if (!dateString) return "Select Birth Date";
+  const d = new Date(dateString);
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${d.getDate()}/${months[d.getMonth()]}/${d.getFullYear()}`;
+};
+
 export default function SignupScreen() {
   const router = useRouter();
   const [step, setStep] = useState(1);
@@ -70,7 +78,7 @@ export default function SignupScreen() {
 
   const validateStep = async () => {
     let newErrors: any = {};
-    const usernameRegex = /^[a-z0-9_]{3,15}$/;
+    const usernameRegex = /^[a-zA-Z0-9_]{3,20}$/;
     const phoneRegex = /^\+?[0-9]{10,15}$/;
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -81,7 +89,7 @@ export default function SignupScreen() {
       else if (calculateAge(new Date(form.birthDate)) < 13)
         newErrors.birthDate = "Must be 13+.";
       if (!usernameRegex.test(form.username))
-        newErrors.username = "3-15 lowercase letters/numbers.";
+        newErrors.username = "3-20 letters, numbers, or underscores.";
     }
 
     if (step === 2) {
@@ -139,33 +147,26 @@ export default function SignupScreen() {
         email: cleanEmail,
         phone: form.phone.trim(),
         birthDate: form.birthDate,
-
         role: "user",
         isAuthor: false,
         profileCompleted: true,
         isVerified: false,
-
         followerCount: 0,
         followingCount: 0,
         friendCount: 0,
-
         booksPublished: 0,
         researchPublished: 0,
         weaveCount: 0,
         booksRead: 0,
-
         totalLikesReceived: 0,
         totalCommentsReceived: 0,
-
         walletBalance: 0,
         walletPending: 0,
         walletTotalEarned: 0,
-
         institution: "",
         bio: "",
         photoURL: "",
         interests: form.genres || [],
-
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -182,9 +183,7 @@ export default function SignupScreen() {
       } catch {}
 
       if (Platform.OS !== "web") {
-        Haptics.notificationAsync(
-          Haptics.NotificationFeedbackType.Success
-        );
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
 
       router.replace("/(tabs)");
@@ -195,10 +194,15 @@ export default function SignupScreen() {
   };
 
   const onDateChange = (event: any, selectedDate?: Date) => {
-    setShowDatePicker(false);
-    if (selectedDate) {
+    if (Platform.OS === 'android') {
+      setShowDatePicker(false);
+    }
+    
+    if (event.type === "set" && selectedDate) {
       setDate(selectedDate);
       updateForm("birthDate", selectedDate.toISOString());
+    } else if (event.type === "dismissed") {
+      setShowDatePicker(false);
     }
   };
 
@@ -219,9 +223,7 @@ export default function SignupScreen() {
           >
             <View style={styles.header}>
               <Text style={styles.welcomeMsg}>WELCOME TO WRITHA</Text>
-              <Text style={styles.stepIndicator}>
-                STEP 0{step} / 02
-              </Text>
+              <Text style={styles.stepIndicator}>STEP 0{step} / 02</Text>
               <Text style={styles.title}>
                 {step === 1 ? "Let's get to know you" : "Security & Contact"}
               </Text>
@@ -236,9 +238,7 @@ export default function SignupScreen() {
                   value={form.firstName}
                   onChangeText={(t) => updateForm("firstName", t)}
                 />
-                {errors.firstName && (
-                  <Text style={styles.error}>{errors.firstName}</Text>
-                )}
+                {errors.firstName && <Text style={styles.error}>{errors.firstName}</Text>}
 
                 <TextInput
                   style={styles.input}
@@ -247,34 +247,54 @@ export default function SignupScreen() {
                   value={form.lastName}
                   onChangeText={(t) => updateForm("lastName", t)}
                 />
-                {errors.lastName && (
-                  <Text style={styles.error}>{errors.lastName}</Text>
-                )}
+                {errors.lastName && <Text style={styles.error}>{errors.lastName}</Text>}
 
                 <TextInput
                   style={styles.input}
-                  placeholder="Username"
+                  placeholder="Username (e.g. JohnDoe)"
                   placeholderTextColor="#999"
                   autoCapitalize="none"
                   value={form.username}
                   onChangeText={(t) => updateForm("username", t)}
                 />
-                {errors.username && (
-                  <Text style={styles.error}>{errors.username}</Text>
+                {errors.username && <Text style={styles.error}>{errors.username}</Text>}
+
+                {/* BIRTHDAY SECTION - Corrected for Laptop/Web compatibility */}
+                {Platform.OS === 'web' ? (
+                  <input
+                    type="date"
+                    style={{
+                      backgroundColor: "rgba(45, 27, 78, 0.8)",
+                      color: "#FFF",
+                      padding: "15px",
+                      borderRadius: "12px",
+                      marginBottom: "12px",
+                      border: "none",
+                      outline: "none",
+                      width: "100%",
+                      fontSize: "16px",
+                      fontFamily: "inherit"
+                    }}
+                    value={form.birthDate ? new Date(form.birthDate).toISOString().split('T')[0] : ""}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if(val) updateForm("birthDate", new Date(val).toISOString());
+                    }}
+                  />
+                ) : (
+                  <TouchableOpacity
+                    style={styles.dateBtn}
+                    onPress={() => setShowDatePicker(true)}
+                  >
+                    <Text style={{ color: form.birthDate ? "#FFF" : "#999" }}>
+                      {formatDisplayDate(form.birthDate)}
+                    </Text>
+                  </TouchableOpacity>
                 )}
 
-                <TouchableOpacity
-                  style={styles.dateBtn}
-                  onPress={() => setShowDatePicker(true)}
-                >
-                  <Text style={{ color: form.birthDate ? "#FFF" : "#999" }}>
-                    {form.birthDate
-                      ? new Date(form.birthDate).toDateString()
-                      : "Select Birth Date"}
-                  </Text>
-                </TouchableOpacity>
+                {errors.birthDate && <Text style={styles.error}>{errors.birthDate}</Text>}
 
-                {showDatePicker && (
+                {showDatePicker && Platform.OS !== 'web' && (
                   <DateTimePicker
                     value={date}
                     mode="date"
@@ -282,6 +302,15 @@ export default function SignupScreen() {
                     maximumDate={new Date()}
                     onChange={onDateChange}
                   />
+                )}
+                
+                {showDatePicker && Platform.OS === 'ios' && (
+                  <TouchableOpacity 
+                    style={{ alignItems: 'flex-end', marginBottom: 15 }} 
+                    onPress={() => setShowDatePicker(false)}
+                  >
+                    <Text style={{ color: "#FFD700", fontWeight: "bold" }}>Done</Text>
+                  </TouchableOpacity>
                 )}
               </>
             )}
@@ -297,7 +326,6 @@ export default function SignupScreen() {
                   value={form.email}
                   onChangeText={(t) => updateForm("email", t)}
                 />
-
                 <TextInput
                   style={styles.input}
                   placeholder="Phone"
@@ -306,7 +334,6 @@ export default function SignupScreen() {
                   value={form.phone}
                   onChangeText={(t) => updateForm("phone", t)}
                 />
-
                 <TextInput
                   style={styles.input}
                   placeholder="Password"
