@@ -11,8 +11,8 @@ import {
   StatusBar,
   TextInput,
   ActivityIndicator,
-  Alert,
-  Platform
+  Platform,
+  Alert
 } from "react-native";
 import { Ionicons, Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -26,7 +26,6 @@ import {
   setDoc,
   orderBy,
   limit,
-  getDoc,
   serverTimestamp,
   deleteDoc
 } from "firebase/firestore";
@@ -42,15 +41,15 @@ const THEME = {
   online: "#4ADE80",
 };
 
-type TabType = "Chats" | "Friends";
-
 export default function SocialScreen() {
   const router = useRouter();
   const userId = auth.currentUser?.uid;
 
-  const [activeTab, setActiveTab] = useState<TabType>("Chats");
+  const [activeTab, setActiveTab] = useState<"Chats" | "Friends">("Chats");
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
+  const [isSearching, setIsSearching] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
 
   const [chats, setChats] = useState<any[]>([]);
   const [friends, setFriends] = useState<any[]>([]);
@@ -61,74 +60,78 @@ export default function SocialScreen() {
 
   const tabScrollValue = useRef(new Animated.Value(0)).current;
 
-  // ---------------- LOAD CHATS ----------------
+  // ---------------- FEATURE: CHAT LIST & TYPING ----------------
   useEffect(() => {
     if (!userId) return;
     const qChats = query(
-      collection(db, "chats"),
-      where("participants", "array-contains", userId),
+      collection(db, "chats"), 
+      where("participants", "array-contains", userId), 
       orderBy("lastMessageAt", "desc")
     );
-    
     const unsubChats = onSnapshot(qChats, (snap) => {
       setChats(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       setLoading(false);
-    }, (err) => {
-      console.error("Chat Query Error:", err);
-      // If you see an alert about an INDEX, click the link in your console!
-      setLoading(false); 
     });
     return () => unsubChats();
   }, [userId]);
 
-  // ---------------- LOAD RELATIONSHIPS ----------------
+  // ---------------- FEATURE: RELATIONSHIPS (FOLLOWING/FOLLOWERS) ----------------
   useEffect(() => {
     if (!userId) return;
-    const unsubFollowing = onSnapshot(collection(db, "users", userId, "following"), 
-      (snap) => setFollowingIds(snap.docs.map(d => d.id)),
-      (err) => console.log("Following Permission Error:", err)
-    );
-    const unsubFollowers = onSnapshot(collection(db, "users", userId, "followers"), 
-      (snap) => setFollowerIds(snap.docs.map(d => d.id)),
-      (err) => console.log("Followers Permission Error:", err)
-    );
+    const unsubFollowing = onSnapshot(collection(db, "users", userId, "following"), (snap) => setFollowingIds(snap.docs.map(d => d.id)));
+    const unsubFollowers = onSnapshot(collection(db, "users", userId, "followers"), (snap) => setFollowerIds(snap.docs.map(d => d.id)));
     return () => { unsubFollowing(); unsubFollowers(); };
   }, [userId]);
 
-  // ---------------- SYNC FRIENDS WITH ONLINE STATUS ----------------
+  // ---------------- FEATURE: MUTUAL FRIENDS CALCULATION ----------------
   useEffect(() => {
-    if (!userId || followingIds.length === 0) return;
+    if (!userId || followingIds.length === 0) { setFriends([]); return; }
     const mutualIds = followingIds.filter(id => followerIds.includes(id));
-    const unsubs = mutualIds.map(targetId => 
-      onSnapshot(doc(db, "users", targetId), (snap) => {
-        if (snap.exists()) {
-          setFriends(prev => {
-            const others = prev.filter(p => p.id !== targetId);
-            return [...others, { id: targetId, ...snap.data() }];
-          });
-        }
-      })
-    );
-    return () => unsubs.forEach(unsub => unsub());
+    const unsubs = mutualIds.map(targetId => onSnapshot(doc(db, "users", targetId), (snap) => {
+      if (snap.exists()) {
+        setFriends(prev => {
+          const others = prev.filter(p => p.id !== targetId);
+          return [...others, { id: targetId, ...snap.data() }];
+        });
+      }
+    }));
+    return () => unsubs.forEach(u => u());
   }, [followingIds, followerIds]);
 
-  // ---------------- SEARCH USERS ----------------
+  // ---------------- FEATURE: PATIENT USERNAME SEARCH ----------------
   useEffect(() => {
-    if (searchQuery.length < 2) {
-      setSearchResults([]);
-      return;
-    }
+    const delayDebounce = setTimeout(() => {
+      if (searchQuery.trim().length >= 1) {
+        performSearch();
+      } else {
+        setSearchResults([]);
+        setHasSearched(false);
+      }
+    }, 800); // 800ms Wait to be sure typing is finished
+    return () => clearTimeout(delayDebounce);
+  }, [searchQuery]);
+
+  const performSearch = () => {
+    setIsSearching(true);
     const q = query(
       collection(db, "users"),
-      where("displayName", ">=", searchQuery),
-      where("displayName", "<=", searchQuery + "\uf8ff"),
-      limit(10)
+      where("username", ">=", searchQuery),
+      where("username", "<=", searchQuery + "\uf8ff"),
+      limit(20)
     );
-    const unsubSearch = onSnapshot(q, (snap) => {
-      setSearchResults(snap.docs.filter(d => d.id !== userId).map(d => ({ id: d.id, ...d.data() })));
+
+    onSnapshot(q, (snap) => {
+      const results = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setSearchResults(results);
+      setIsSearching(false);
+      setHasSearched(true);
+      
+      // AUTO-CLEAR: If absolutely nothing is found, clear the bar after 4 seconds
+      if (results.length === 0) {
+        setTimeout(() => setSearchQuery(""), 4000);
+      }
     });
-    return () => unsubSearch();
-  }, [searchQuery, userId]);
+  };
 
   const toggleFollow = async (targetId: string) => {
     if (!userId) return;
@@ -141,70 +144,73 @@ export default function SocialScreen() {
         await setDoc(doc(db, "users", userId, "following", targetId), { timestamp: serverTimestamp() });
         await setDoc(doc(db, "users", targetId, "followers", userId), { timestamp: serverTimestamp() });
       }
-    } catch (e) { Alert.alert("Permissions Error", "Check your Firestore rules for sub-collections."); }
+    } catch (e) { Alert.alert("Error", "Check Database Rules."); }
   };
 
   const startChat = async (targetUser: any) => {
     if (!userId) return;
+    setSearchQuery(""); // Clear search bar on chat start
     const chatId = userId < targetUser.id ? `${userId}_${targetUser.id}` : `${targetUser.id}_${userId}`;
     await setDoc(doc(db, "chats", chatId), {
       participants: [userId, targetUser.id],
       participantData: {
         [userId]: { name: auth.currentUser?.displayName || "User", photo: auth.currentUser?.photoURL || "" },
-        [targetUser.id]: { name: targetUser.displayName || "User", photo: targetUser.photoURL || "" }
+        [targetUser.id]: { name: targetUser.username || "User", photo: targetUser.photoURL || "" }
       },
-      lastMessage: "Start of a new conversation...",
+      lastMessage: "Connecting...",
       lastMessageAt: serverTimestamp(),
       typingStatus: { [userId]: false, [targetUser.id]: false }
     }, { merge: true });
     router.push({ pathname: "/chat/[id]", params: { id: targetUser.id } } as any);
   };
 
-  const switchTab = (tab: TabType, index: number) => {
+  const switchTab = (tab: "Chats" | "Friends", index: number) => {
+    setSearchQuery(""); // Reset search on tab switch
     setActiveTab(tab);
-    Animated.spring(tabScrollValue, { 
-      toValue: index * ((width - 40) / 2), 
-      useNativeDriver: Platform.OS !== 'web', // FIX FOR IMAGE #4
-      friction: 8 
-    }).start();
+    Animated.spring(tabScrollValue, { toValue: index * ((width - 40) / 2), useNativeDriver: Platform.OS !== 'web', friction: 8 }).start();
   };
 
-  const ChatItem = ({ item }: any) => {
-    const otherId = item.participants?.find((p: string) => p !== userId);
-    const otherUser = item.participantData?.[otherId];
-    const isTyping = item.typingStatus?.[otherId] === true;
-
-    return (
-      <TouchableOpacity style={styles.card} onPress={() => router.push({ pathname: "/chat/[id]", params: { id: otherId } } as any)}>
-        <View style={styles.avatar}>{otherUser?.photo && <Image source={{ uri: otherUser.photo }} style={styles.avatarImage} />}</View>
-        <View style={styles.info}>
-          <Text style={styles.name}>{otherUser?.name || "Writha Member"}</Text>
-          {isTyping ? <Text style={[styles.preview, { color: THEME.accent }]}>typing...</Text> : <Text style={styles.preview} numberOfLines={1}>{item.lastMessage}</Text>}
-        </View>
-      </TouchableOpacity>
-    );
-  };
-
-  const UserItem = ({ item }: any) => {
+  // ---------------- COMPONENT: DYNAMIC LIST ITEM ----------------
+  const UserItem = ({ item, isChatView }: { item: any, isChatView: boolean }) => {
     const isFollowing = followingIds.includes(item.id);
     const isFollower = followerIds.includes(item.id);
     const isMutual = isFollowing && isFollower;
+
+    const otherId = isChatView ? item.participants?.find((p: string) => p !== userId) : item.id;
+    const userData = isChatView ? item.participantData?.[otherId] : item;
+    const isTyping = isChatView && item.typingStatus?.[otherId];
+
     return (
       <View style={styles.card}>
-        <TouchableOpacity style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }} onPress={() => router.push({ pathname: "/profile/[id]", params: { id: item.id } } as any)}>
-          <View style={styles.avatar}>
-            {item.photoURL && <Image source={{ uri: item.photoURL }} style={styles.avatarImage} />}
-            {item.isOnline && <View style={styles.onlineDot} />}
+        <TouchableOpacity style={styles.cardMain} onPress={() => router.push({ pathname: "/profile/[id]", params: { id: otherId } } as any)}>
+          <View style={styles.avatarWrap}>
+            {(userData?.photoURL || userData?.photo) && <Image source={{ uri: userData.photoURL || userData.photo }} style={styles.avatarImg} />}
+            {(item.isOnline || isChatView) && <View style={styles.onlineDot} />}
           </View>
           <View style={styles.info}>
-            <Text style={styles.name}>{item.displayName}</Text>
-            <Text style={styles.statusBadge}>{item.isOnline ? "🟢 Active Now" : isMutual ? "✨ Mutual" : "📖 Scholar"}</Text>
+            <Text style={styles.name}>{userData?.username || userData?.name || "Member"}</Text>
+            {isChatView ? (
+              <Text style={[styles.status, isTyping && { color: THEME.accent }]} numberOfLines={1}>
+                {isTyping ? "typing..." : item.lastMessage}
+              </Text>
+            ) : (
+              <Text style={styles.status}>{item.isOnline ? "🟢 Active" : isMutual ? "✨ Mutual" : "📖 Scholar"}</Text>
+            )}
           </View>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.followBtn, isFollowing && styles.followingBtn]} onPress={() => toggleFollow(item.id)}>
-          <Ionicons name={isFollowing ? "person-remove" : "person-add"} size={18} color={isFollowing ? THEME.text : THEME.bg} />
-        </TouchableOpacity>
-        {isMutual && <TouchableOpacity style={styles.chatBtn} onPress={() => startChat(item)}><Ionicons name="chatbubble-ellipses" size={18} color={THEME.bg} /></TouchableOpacity>}
+        
+        <View style={styles.actions}>
+          {!isChatView && (
+            <TouchableOpacity style={[styles.btn, isFollowing && styles.btnFollowed]} onPress={() => toggleFollow(item.id)}>
+              <Ionicons name={isFollowing ? "person-remove" : "person-add"} size={20} color={isFollowing ? THEME.text : THEME.bg} />
+            </TouchableOpacity>
+          )}
+          {(isMutual || isChatView) && (
+            <TouchableOpacity style={styles.btn} onPress={() => isChatView ? router.push({ pathname: "/chat/[id]", params: { id: otherId } } as any) : startChat(item)}>
+              <Ionicons name="chatbubble-ellipses" size={20} color={THEME.bg} />
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
     );
   };
@@ -213,28 +219,44 @@ export default function SocialScreen() {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
       <View style={styles.header}>
-        <Text style={styles.title}>WRITHA SOCIAL</Text>
-        <View style={styles.search}>
-          <Feather name="search" size={16} color={THEME.textMuted} />
-          <TextInput placeholder="Search library members..." placeholderTextColor={THEME.textMuted} style={styles.input} value={searchQuery} onChangeText={setSearchQuery} />
+        <Text style={styles.brandTitle}>WRITHA SOCIAL</Text>
+        <View style={styles.searchContainer}>
+          <Feather name="search" size={20} color={THEME.textMuted} />
+          <TextInput 
+            placeholder="Search for usernames..." 
+            placeholderTextColor="#4B3E63" 
+            style={styles.searchInput} 
+            value={searchQuery} 
+            onChangeText={setSearchQuery} 
+            autoCapitalize="none"
+          />
+          {isSearching && <ActivityIndicator size="small" color={THEME.accent} />}
         </View>
       </View>
 
       <View style={styles.tabs}>
-        <Animated.View style={[styles.indicator, { transform: [{ translateX: tabScrollValue }] }]} />
-        <TouchableOpacity style={styles.tab} onPress={() => switchTab("Chats", 0)}><Text style={[styles.tabText, activeTab === "Chats" && { color: THEME.bg }]}>Chats</Text></TouchableOpacity>
-        <TouchableOpacity style={styles.tab} onPress={() => switchTab("Friends", 1)}><Text style={[styles.tabText, activeTab === "Friends" && { color: THEME.bg }]}>Friends</Text></TouchableOpacity>
+        <Animated.View style={[styles.tabIndicator, { transform: [{ translateX: tabScrollValue }] }]} />
+        <TouchableOpacity style={styles.tab} onPress={() => switchTab("Chats", 0)}><Text style={[styles.tabText, activeTab === "Chats" && { color: THEME.bg }]}>CHATS</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.tab} onPress={() => switchTab("Friends", 1)}><Text style={[styles.tabText, activeTab === "Friends" && { color: THEME.bg }]}>FRIENDS</Text></TouchableOpacity>
       </View>
 
       {loading ? (
-        <View style={{ flex: 1, justifyContent: 'center' }}><ActivityIndicator color={THEME.accent} size="large" /></View>
+        <ActivityIndicator color={THEME.accent} size="large" style={{ marginTop: 100 }} />
       ) : (
         <FlatList
           data={searchQuery.length > 0 ? searchResults : activeTab === "Chats" ? chats : friends}
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ padding: 20 }}
-          renderItem={({ item }) => (activeTab === "Chats" && searchQuery.length === 0 ? <ChatItem item={item} /> : <UserItem item={item} />)}
-          ListEmptyComponent={<Text style={styles.emptyText}>Nothing found. Follow friends and start a chat to begin!</Text>}
+          renderItem={({ item }) => <UserItem item={item} isChatView={activeTab === "Chats" && searchQuery.length === 0} />}
+          ListEmptyComponent={
+            <View style={styles.emptyView}>
+              <Text style={styles.emptyText}>
+                {searchQuery.length > 0 && hasSearched 
+                  ? `No user found with username: "${searchQuery}"` 
+                  : activeTab === "Chats" ? "Your chat list is empty." : "Follow friends to see them here!"}
+              </Text>
+            </View>
+          }
         />
       )}
     </View>
@@ -243,24 +265,25 @@ export default function SocialScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: THEME.bg },
-  header: { paddingTop: 60, paddingHorizontal: 20, marginBottom: 15 },
-  title: { color: THEME.text, fontSize: 18, fontWeight: "bold", marginBottom: 10 },
-  search: { flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui, borderRadius: 10, paddingHorizontal: 10, height: 40 },
-  input: { flex: 1, marginLeft: 8, color: THEME.text },
-  tabs: { flexDirection: "row", marginHorizontal: 20, backgroundColor: THEME.ui, borderRadius: 25, height: 45, position: 'relative' },
+  header: { paddingTop: 60, paddingHorizontal: 25, marginBottom: 15 },
+  brandTitle: { color: THEME.text, fontSize: 26, fontWeight: "900", letterSpacing: 4, marginBottom: 15 },
+  searchContainer: { flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui, borderRadius: 18, paddingHorizontal: 15, height: 55, borderWidth: 1, borderColor: "#2D1B4D" },
+  searchInput: { flex: 1, marginLeft: 12, color: THEME.text, fontWeight: "700", fontSize: 16 },
+  tabs: { flexDirection: "row", marginHorizontal: 25, backgroundColor: THEME.ui, borderRadius: 15, height: 50, marginBottom: 10 },
   tab: { flex: 1, justifyContent: 'center', alignItems: "center", zIndex: 1 },
-  tabText: { color: THEME.text, fontWeight: "600" },
-  indicator: { position: "absolute", width: "50%", height: "100%", backgroundColor: THEME.accent, borderRadius: 25 },
-  card: { flexDirection: "row", alignItems: "center", marginBottom: 12, backgroundColor: THEME.ui, padding: 12, borderRadius: 15 },
-  avatar: { width: 52, height: 52, borderRadius: 18, backgroundColor: "#2D1B4D", position: 'relative' },
-  avatarImage: { width: '100%', height: '100%', borderRadius: 18 },
-  onlineDot: { position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: 7, backgroundColor: THEME.online, borderWidth: 2, borderColor: THEME.ui },
-  info: { flex: 1, marginLeft: 12 },
-  name: { color: THEME.text, fontWeight: "bold", fontSize: 15 },
-  preview: { color: THEME.textMuted, fontSize: 12, marginTop: 2 },
-  statusBadge: { color: THEME.accent, fontSize: 10, marginTop: 2, fontWeight: '600' },
-  followBtn: { backgroundColor: THEME.accent, padding: 10, borderRadius: 12, marginLeft: 8 },
-  followingBtn: { backgroundColor: 'transparent', borderWidth: 1, borderColor: THEME.textMuted },
-  chatBtn: { backgroundColor: THEME.accent, padding: 10, borderRadius: 12, marginLeft: 8 },
-  emptyText: { color: THEME.textMuted, textAlign: 'center', marginTop: 50 }
+  tabText: { color: THEME.text, fontWeight: "900", fontSize: 14, letterSpacing: 1 },
+  tabIndicator: { position: "absolute", width: "50%", height: "100%", backgroundColor: THEME.accent, borderRadius: 15 },
+  card: { flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui, padding: 18, borderRadius: 25, marginBottom: 15 },
+  cardMain: { flex: 1, flexDirection: 'row', alignItems: 'center' },
+  avatarWrap: { width: 60, height: 60, borderRadius: 20, backgroundColor: "#2D1B4D" },
+  avatarImg: { width: '100%', height: '100%', borderRadius: 20 },
+  onlineDot: { position: 'absolute', right: -3, bottom: -3, width: 16, height: 16, borderRadius: 8, backgroundColor: THEME.online, borderWidth: 3, borderColor: THEME.ui },
+  info: { marginLeft: 18, flex: 1 },
+  name: { color: THEME.text, fontWeight: "900", fontSize: 18 },
+  status: { color: THEME.accent, fontSize: 13, marginTop: 5, fontWeight: "700" },
+  actions: { flexDirection: 'row' },
+  btn: { backgroundColor: THEME.accent, padding: 12, borderRadius: 15, marginLeft: 10 },
+  btnFollowed: { backgroundColor: 'transparent', borderWidth: 1, borderColor: THEME.textMuted },
+  emptyView: { marginTop: 120, alignItems: 'center', paddingHorizontal: 50 },
+  emptyText: { color: THEME.textMuted, textAlign: 'center', fontSize: 16, fontWeight: "700", lineHeight: 24 }
 });
