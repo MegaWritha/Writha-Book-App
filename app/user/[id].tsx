@@ -1,125 +1,188 @@
-import React, { useEffect, useState } from 'react';
-import { 
-  View, Text, StyleSheet, Image, ScrollView, 
-  TouchableOpacity, ActivityIndicator 
-} from 'react-native'; // ✅ Fixed: ActivityIndicator added to imports
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { db } from '@/lib/firebase';
-import { doc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
-import FollowButton from './FollowButton'; // ✅ Integrated your component
-import { Ionicons } from '@expo/vector-icons';
+import React, { useState, useEffect } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  Image,
+  TouchableOpacity,
+  TextInput,
+  ActivityIndicator,
+  Dimensions,
+} from "react-native";
+import { Feather, Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import { db, auth } from "@/lib/firebase";
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  setDoc,
+  doc,
+  serverTimestamp,
+  limit,
+} from "firebase/firestore";
 
-export default function UserProfile() {
-  const { id } = useLocalSearchParams();
+const { width } = Dimensions.get("window");
+
+const THEME = {
+  bg: "#0F071A",
+  ui: "#1E1135",
+  accent: "#FFD700",
+  text: "#E2E8F0",
+  textMuted: "#94A3B8",
+};
+
+export default function UserList() {
   const router = useRouter();
-  const [profile, setProfile] = useState<any>(null);
-  const [weaves, setWeaves] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [results, setResults] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const currentUserId = auth.currentUser?.uid;
 
-  useEffect(() => {
-    if (!id) return;
+  const handleSearch = async (text: string) => {
+    setSearchQuery(text);
+    if (text.length < 2) {
+      setResults([]);
+      return;
+    }
 
-    // Fetch Profile Data
-    const fetchUser = async () => {
-      try {
-        const snap = await getDoc(doc(db, "users", id as string));
-        if (snap.exists()) setProfile(snap.data());
-      } catch (e) { console.error("Profile fetch error:", e); }
-    };
-
-    // Real-time Weaves from this user
-    const q = query(
-      collection(db, "weaves"), 
-      where("creatorId", "==", id), 
-      where("isPublic", "==", true)
-    );
-    
-    const unsub = onSnapshot(q, (snap) => {
-      setWeaves(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    setLoading(true);
+    try {
+      const q = query(
+        collection(db, "users"),
+        where("username", ">=", text.toLowerCase()),
+        where("username", "<=", text.toLowerCase() + "\uf8ff"),
+        limit(10)
+      );
+      const snap = await getDocs(q);
+      setResults(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(u => u.id !== currentUserId));
+    } catch (e) {
+      console.error("Search Error: ", e);
+    } finally {
       setLoading(false);
-    });
+    }
+  };
 
-    fetchUser();
-    return () => unsub();
-  }, [id]);
+  // --- THE FOLLOW LOGIC THAT CREATES A NOTIFICATION ---
+  const followScholar = async (targetUser: any) => {
+    if (!currentUserId) return;
 
-  if (loading) return (
-    <View style={styles.loader}>
-      <ActivityIndicator size="large" color="#FFD700" />
-    </View>
-  );
+    try {
+      // 1. Add to your 'following'
+      await setDoc(doc(db, "users", currentUserId, "following", targetUser.id), {
+        timestamp: serverTimestamp(),
+        username: targetUser.username
+      });
+
+      // 2. Add to their 'followers'
+      await setDoc(doc(db, "users", targetUser.id, "followers", currentUserId), {
+        timestamp: serverTimestamp(),
+        username: auth.currentUser?.displayName || "A Scholar"
+      });
+
+      // 3. CREATE THE NOTIFICATION (This is what they will see in their Friends tab)
+      const notificationId = `${currentUserId}_follow_${Date.now()}`;
+      await setDoc(doc(db, "users", targetUser.id, "notifications", notificationId), {
+        type: "follow",
+        fromId: currentUserId,
+        fromUsername: auth.currentUser?.displayName || "A Scholar",
+        fromImage: auth.currentUser?.photoURL || "",
+        message: "started following your research.",
+        read: false,
+        timestamp: serverTimestamp(),
+      });
+
+      alert(`You are now following @${targetUser.username}`);
+    } catch (e) {
+      console.error("Follow error:", e);
+    }
+  };
 
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      {/* HEADER NAV */}
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="arrow-back" size={24} color="#FFD700" />
-      </TouchableOpacity>
-
-      <View style={styles.header}>
-        <Image source={{ uri: profile?.photoURL || "https://picsum.photos/200" }} style={styles.pfp} />
-        <Text style={styles.name}>{profile?.displayName || "Writha Member"}</Text>
-        <Text style={styles.bio}>{profile?.bio || "Exploring the depths of literature on Writha."}</Text>
-        
-        {/* FOLLOW COMPONENT */}
-        <View style={styles.followWrap}>
-           <FollowButton targetUserId={id as string} />
-        </View>
-      </View>
-
-      <View style={styles.statsRow}>
-        <View style={styles.statItem}>
-          <Text style={styles.statNum}>{weaves.length}</Text>
-          <Text style={styles.statLabel}>WEAVES</Text>
-        </View>
-        <View style={styles.statItem}>
-          <Text style={styles.statNum}>{profile?.tribeCount || 0}</Text>
-          <Text style={styles.statLabel}>TRIBE</Text>
-        </View>
-      </View>
-
-      <Text style={styles.sectionTitle}>Public Research & Findings</Text>
+    <View style={styles.container}>
+      <Text style={styles.brandTitle}>WRITHA SCHOLARS</Text>
       
-      {weaves.length > 0 ? weaves.map(w => (
-        <TouchableOpacity key={w.id} style={styles.wCard} onPress={() => router.push(`/weave/${w.id}`)}>
-          <View style={styles.wHeader}>
-            <Text style={styles.wType}>{w.type?.toUpperCase()}</Text>
-            <Text style={styles.wDate}>{new Date(w.createdAt?.seconds * 1000).toLocaleDateString()}</Text>
-          </View>
-          <Text style={styles.wTitle}>{w.title}</Text>
-          <Text style={styles.wSnippet} numberOfLines={2}>{w.content}</Text>
-        </TouchableOpacity>
-      )) : (
-        <View style={styles.emptyCard}>
-          <Text style={styles.emptyText}>This user hasn't published any public weaves yet.</Text>
-        </View>
-      )}
+      <View style={styles.searchBar}>
+        <Feather name="search" size={18} color={THEME.textMuted} />
+        <TextInput
+          placeholder="Search by username..."
+          placeholderTextColor="#4B3E63"
+          style={styles.input}
+          value={searchQuery}
+          onChangeText={handleSearch}
+          autoCapitalize="none"
+        />
+      </View>
 
-      <View style={{ height: 50 }} />
-    </ScrollView>
+      {loading ? (
+        <ActivityIndicator color={THEME.accent} style={{ marginTop: 50 }} />
+      ) : (
+        <FlatList
+          data={results}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={{ paddingBottom: 100 }}
+          renderItem={({ item }) => (
+            <View style={styles.userCard}>
+              <View style={styles.userInfo}>
+                {/* CLICKING CIRCULAR PROFILE - NAVIGATES TO [id].tsx */}
+                <TouchableOpacity 
+                  onPress={() => router.push(`/profile/${item.id}`)}
+                  style={styles.avatarContainer}
+                >
+                  {item.profilePic ? (
+                    <Image source={{ uri: item.profilePic }} style={styles.circularAvatar} />
+                  ) : (
+                    <View style={styles.avatarPlaceholder}>
+                       <Text style={styles.initials}>{item.username?.charAt(0).toUpperCase()}</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+
+                <View style={styles.textContainer}>
+                    <Text style={styles.userName}>@{item.username}</Text>
+                    <Text style={styles.userBio} numberOfLines={1}>
+                        {item.bio || "Scholar at Writha."}
+                    </Text>
+                </View>
+              </View>
+              
+              <TouchableOpacity 
+                style={styles.followBtn} 
+                onPress={() => followScholar(item)}
+              >
+                <Ionicons name="person-add" size={16} color={THEME.bg} />
+                <Text style={styles.followText}>FOLLOW</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          ListEmptyComponent={
+            searchQuery.length > 1 && !loading ? (
+                <Text style={styles.emptyText}>No scholars found.</Text>
+            ) : null
+          }
+        />
+      )}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#0F071A" },
-  loader: { flex: 1, backgroundColor: "#0F071A", justifyContent: 'center', alignItems: 'center' },
-  backBtn: { marginTop: 50, marginLeft: 20 },
-  header: { alignItems: 'center', marginTop: 20 },
-  pfp: { width: 110, height: 110, borderRadius: 55, borderWidth: 3, borderColor: '#FFD700' },
-  name: { color: '#FFF', fontSize: 24, fontWeight: '900', marginTop: 15 },
-  bio: { color: '#A78BFA', textAlign: 'center', paddingHorizontal: 40, marginTop: 8, fontSize: 14, lineHeight: 20 },
-  followWrap: { marginTop: 20, width: 150 },
-  statsRow: { flexDirection: 'row', justifyContent: 'center', marginVertical: 30, borderTopWidth: 1, borderBottomWidth: 1, borderColor: '#1E1135', paddingVertical: 15 },
-  statItem: { alignItems: 'center', marginHorizontal: 30 },
-  statNum: { color: '#FFD700', fontSize: 20, fontWeight: '800' },
-  statLabel: { color: '#FFF', fontSize: 10, letterSpacing: 1, marginTop: 4 },
-  sectionTitle: { color: '#FFD700', fontSize: 18, fontWeight: '900', marginLeft: 20, marginBottom: 15 },
-  wCard: { backgroundColor: '#1E1135', marginHorizontal: 20, padding: 20, borderRadius: 15, marginBottom: 12, borderWidth: 1, borderColor: '#4C1D95' },
-  wHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-  wType: { color: '#FFD700', fontSize: 10, fontWeight: 'bold' },
-  wDate: { color: '#6D28D9', fontSize: 10 },
-  wTitle: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
-  wSnippet: { color: '#A78BFA', fontSize: 13, marginTop: 5 },
-  emptyCard: { margin: 20, padding: 30, backgroundColor: '#1E1135', borderRadius: 15, borderStyle: 'dashed', borderWidth: 1, borderColor: '#4C1D95' },
-  emptyText: { color: '#6D28D9', textAlign: 'center', fontStyle: 'italic' }
+  container: { flex: 1, backgroundColor: THEME.bg, paddingHorizontal: 20, paddingTop: 60 },
+  brandTitle: { color: THEME.text, fontSize: 24, fontWeight: "900", letterSpacing: 3, marginBottom: 25 },
+  searchBar: { flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui, borderRadius: 20, paddingHorizontal: 20, height: 60, marginBottom: 25, borderWidth: 1, borderColor: '#2D1B4D' },
+  input: { flex: 1, marginLeft: 15, color: THEME.text, fontWeight: "700", fontSize: 16 },
+  userCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: THEME.ui, padding: 15, borderRadius: 25, marginBottom: 12, borderWidth: 1, borderColor: '#2D1B4D' },
+  userInfo: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  avatarContainer: { position: 'relative' },
+  circularAvatar: { width: 55, height: 55, borderRadius: 27.5, borderWidth: 2, borderColor: THEME.accent },
+  avatarPlaceholder: { width: 55, height: 55, borderRadius: 27.5, backgroundColor: '#2D1B4D', justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: THEME.accent },
+  initials: { color: THEME.accent, fontWeight: '900', fontSize: 18 },
+  textContainer: { marginLeft: 15, flex: 1 },
+  userName: { color: THEME.text, fontWeight: '900', fontSize: 17 },
+  userBio: { color: THEME.textMuted, fontSize: 12, fontWeight: '600', marginTop: 2 },
+  followBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: THEME.accent, paddingVertical: 10, paddingHorizontal: 15, borderRadius: 12 },
+  followText: { color: THEME.bg, fontWeight: '900', fontSize: 11, marginLeft: 5 },
+  emptyText: { color: '#4B3E63', textAlign: 'center', marginTop: 30, fontWeight: '700' }
 });

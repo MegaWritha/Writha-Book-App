@@ -12,7 +12,8 @@ import {
   TextInput,
   ActivityIndicator,
   Platform,
-  Alert
+  Alert,
+  Modal
 } from "react-native";
 import { Ionicons, Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -27,10 +28,23 @@ import {
   orderBy,
   limit,
   serverTimestamp,
-  deleteDoc
+  deleteDoc,
+  updateDoc
 } from "firebase/firestore";
 
-const { width } = Dimensions.get("window");
+const { width, height } = Dimensions.get("window");
+
+// --- THIS INTERFACE FIXES THE ERROR IN YOUR SCREENSHOT ---
+interface ScholarNotification {
+  id: string;
+  read: boolean;
+  type: string;
+  fromId: string;
+  fromUsername: string;
+  fromImage: string;
+  message: string;
+  timestamp: any;
+}
 
 const THEME = {
   bg: "#0F071A",
@@ -58,6 +72,11 @@ export default function SocialScreen() {
   const [followingIds, setFollowingIds] = useState<string[]>([]);
   const [followerIds, setFollowerIds] = useState<string[]>([]);
 
+  // --- NOTIFICATION STATES (FIXED TYPE) ---
+  const [notifications, setNotifications] = useState<ScholarNotification[]>([]);
+  const [showNotifs, setShowNotifs] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
   const tabScrollValue = useRef(new Animated.Value(0)).current;
 
   // ---------------- FEATURE: CHAT LIST & TYPING ----------------
@@ -75,6 +94,23 @@ export default function SocialScreen() {
     return () => unsubChats();
   }, [userId]);
 
+  // ---------------- FEATURE: GLOBAL NOTIFICATIONS ----------------
+  useEffect(() => {
+    if (!userId) return;
+    const qNotifs = query(
+      collection(db, "users", userId, "notifications"),
+      orderBy("timestamp", "desc"),
+      limit(30)
+    );
+    const unsubNotifs = onSnapshot(qNotifs, (snap) => {
+      // Mapping the data to our Fixed Interface
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as ScholarNotification));
+      setNotifications(data);
+      setUnreadCount(data.filter(n => !n.read).length);
+    });
+    return () => unsubNotifs();
+  }, [userId]);
+
   // ---------------- FEATURE: RELATIONSHIPS (FOLLOWING/FOLLOWERS) ----------------
   useEffect(() => {
     if (!userId) return;
@@ -85,8 +121,10 @@ export default function SocialScreen() {
 
   // ---------------- FEATURE: MUTUAL FRIENDS CALCULATION ----------------
   useEffect(() => {
-    if (!userId || followingIds.length === 0) { setFriends([]); return; }
+    if (!userId || (followingIds.length === 0 && followerIds.length === 0)) { setFriends([]); return; }
     const mutualIds = followingIds.filter(id => followerIds.includes(id));
+    if (mutualIds.length === 0) { setFriends([]); return; }
+    
     const unsubs = mutualIds.map(targetId => onSnapshot(doc(db, "users", targetId), (snap) => {
       if (snap.exists()) {
         setFriends(prev => {
@@ -107,7 +145,7 @@ export default function SocialScreen() {
         setSearchResults([]);
         setHasSearched(false);
       }
-    }, 800); // 800ms Wait to be sure typing is finished
+    }, 800);
     return () => clearTimeout(delayDebounce);
   }, [searchQuery]);
 
@@ -115,8 +153,8 @@ export default function SocialScreen() {
     setIsSearching(true);
     const q = query(
       collection(db, "users"),
-      where("username", ">=", searchQuery),
-      where("username", "<=", searchQuery + "\uf8ff"),
+      where("username", ">=", searchQuery.toLowerCase()),
+      where("username", "<=", searchQuery.toLowerCase() + "\uf8ff"),
       limit(20)
     );
 
@@ -125,10 +163,17 @@ export default function SocialScreen() {
       setSearchResults(results);
       setIsSearching(false);
       setHasSearched(true);
-      
-      // AUTO-CLEAR: If absolutely nothing is found, clear the bar after 4 seconds
       if (results.length === 0) {
         setTimeout(() => setSearchQuery(""), 4000);
+      }
+    });
+  };
+
+  const markNotifsRead = async () => {
+    setShowNotifs(true);
+    notifications.forEach(async (n) => {
+      if (!n.read) {
+        await updateDoc(doc(db, "users", userId!, "notifications", n.id), { read: true });
       }
     });
   };
@@ -149,7 +194,7 @@ export default function SocialScreen() {
 
   const startChat = async (targetUser: any) => {
     if (!userId) return;
-    setSearchQuery(""); // Clear search bar on chat start
+    setSearchQuery("");
     const chatId = userId < targetUser.id ? `${userId}_${targetUser.id}` : `${targetUser.id}_${userId}`;
     await setDoc(doc(db, "chats", chatId), {
       participants: [userId, targetUser.id],
@@ -165,17 +210,15 @@ export default function SocialScreen() {
   };
 
   const switchTab = (tab: "Chats" | "Friends", index: number) => {
-    setSearchQuery(""); // Reset search on tab switch
+    setSearchQuery("");
     setActiveTab(tab);
     Animated.spring(tabScrollValue, { toValue: index * ((width - 40) / 2), useNativeDriver: Platform.OS !== 'web', friction: 8 }).start();
   };
 
-  // ---------------- COMPONENT: DYNAMIC LIST ITEM ----------------
   const UserItem = ({ item, isChatView }: { item: any, isChatView: boolean }) => {
     const isFollowing = followingIds.includes(item.id);
     const isFollower = followerIds.includes(item.id);
     const isMutual = isFollowing && isFollower;
-
     const otherId = isChatView ? item.participants?.find((p: string) => p !== userId) : item.id;
     const userData = isChatView ? item.participantData?.[otherId] : item;
     const isTyping = isChatView && item.typingStatus?.[otherId];
@@ -184,7 +227,7 @@ export default function SocialScreen() {
       <View style={styles.card}>
         <TouchableOpacity style={styles.cardMain} onPress={() => router.push({ pathname: "/profile/[id]", params: { id: otherId } } as any)}>
           <View style={styles.avatarWrap}>
-            {(userData?.photoURL || userData?.photo) && <Image source={{ uri: userData.photoURL || userData.photo }} style={styles.avatarImg} />}
+            {(userData?.photoURL || userData?.photo || userData?.profilePic) && <Image source={{ uri: userData.photoURL || userData.photo || userData.profilePic }} style={styles.avatarImg} />}
             {(item.isOnline || isChatView) && <View style={styles.onlineDot} />}
           </View>
           <View style={styles.info}>
@@ -198,7 +241,6 @@ export default function SocialScreen() {
             )}
           </View>
         </TouchableOpacity>
-        
         <View style={styles.actions}>
           {!isChatView && (
             <TouchableOpacity style={[styles.btn, isFollowing && styles.btnFollowed]} onPress={() => toggleFollow(item.id)}>
@@ -219,17 +261,20 @@ export default function SocialScreen() {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
       <View style={styles.header}>
-        <Text style={styles.brandTitle}>WRITHA SOCIAL</Text>
+        <View style={styles.headerTop}>
+          <Text style={styles.brandTitle}>WRITHA SOCIAL</Text>
+          <TouchableOpacity style={styles.notifBell} onPress={markNotifsRead}>
+            <Ionicons name="notifications-outline" size={28} color={THEME.accent} />
+            {unreadCount > 0 && (
+              <View style={styles.notifBadge}>
+                <Text style={styles.badgeText}>{unreadCount}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
         <View style={styles.searchContainer}>
           <Feather name="search" size={20} color={THEME.textMuted} />
-          <TextInput 
-            placeholder="Search for usernames..." 
-            placeholderTextColor="#4B3E63" 
-            style={styles.searchInput} 
-            value={searchQuery} 
-            onChangeText={setSearchQuery} 
-            autoCapitalize="none"
-          />
+          <TextInput placeholder="Search for usernames..." placeholderTextColor="#4B3E63" style={styles.searchInput} value={searchQuery} onChangeText={setSearchQuery} autoCapitalize="none" />
           {isSearching && <ActivityIndicator size="small" color={THEME.accent} />}
         </View>
       </View>
@@ -259,6 +304,39 @@ export default function SocialScreen() {
           }
         />
       )}
+
+      {/* GLOBAL NOTIFICATION MODAL (SLIDES FROM RIGHT) */}
+      <Modal visible={showNotifs} animationType="slide" transparent={true} onRequestClose={() => setShowNotifs(false)}>
+        <View style={styles.notifOverlay}>
+          <TouchableOpacity style={styles.dismissArea} onPress={() => setShowNotifs(false)} />
+          <View style={styles.notifPanel}>
+            <View style={styles.panelHeader}>
+              <Text style={styles.panelTitle}>NOTIFICATIONS</Text>
+              <TouchableOpacity onPress={() => setShowNotifs(false)}>
+                <Ionicons name="close-outline" size={30} color={THEME.accent} />
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={notifications}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={{ paddingBottom: 50 }}
+              ListEmptyComponent={<Text style={styles.emptyNotif}>You have no Notifications.</Text>}
+              renderItem={({ item }) => (
+                <TouchableOpacity style={styles.notifItem} onPress={() => { setShowNotifs(false); router.push(`/profile/${item.fromId}`); }}>
+                  <Image source={{ uri: item.fromImage || "https://ui-avatars.com/api/?name=S" }} style={styles.notifAvatar} />
+                  <View style={{ flex: 1, marginLeft: 12 }}>
+                    <Text style={styles.notifDesc}>
+                      <Text style={{ color: '#FFF', fontWeight: '900' }}>@{item.fromUsername}</Text> {item.message}
+                    </Text>
+                    <Text style={styles.notifTime}>{item.timestamp?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                  </View>
+                  <View style={[styles.notifTypeIndicator, { backgroundColor: item.type === 'follow' ? '#A78BFA' : item.type === 'like' ? '#F43F5E' : THEME.accent }]} />
+                </TouchableOpacity>
+              )}
+            />
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -266,7 +344,11 @@ export default function SocialScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: THEME.bg },
   header: { paddingTop: 60, paddingHorizontal: 25, marginBottom: 15 },
-  brandTitle: { color: THEME.text, fontSize: 26, fontWeight: "900", letterSpacing: 4, marginBottom: 15 },
+  headerTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
+  brandTitle: { color: THEME.text, fontSize: 26, fontWeight: "900", letterSpacing: 4 },
+  notifBell: { padding: 5, position: 'relative' },
+  notifBadge: { position: 'absolute', top: 0, right: 0, backgroundColor: '#FF4444', minWidth: 18, height: 18, borderRadius: 9, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: THEME.bg },
+  badgeText: { color: '#FFF', fontSize: 10, fontWeight: '900' },
   searchContainer: { flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui, borderRadius: 18, paddingHorizontal: 15, height: 55, borderWidth: 1, borderColor: "#2D1B4D" },
   searchInput: { flex: 1, marginLeft: 12, color: THEME.text, fontWeight: "700", fontSize: 16 },
   tabs: { flexDirection: "row", marginHorizontal: 25, backgroundColor: THEME.ui, borderRadius: 15, height: 50, marginBottom: 10 },
@@ -285,5 +367,16 @@ const styles = StyleSheet.create({
   btn: { backgroundColor: THEME.accent, padding: 12, borderRadius: 15, marginLeft: 10 },
   btnFollowed: { backgroundColor: 'transparent', borderWidth: 1, borderColor: THEME.textMuted },
   emptyView: { marginTop: 120, alignItems: 'center', paddingHorizontal: 50 },
-  emptyText: { color: THEME.textMuted, textAlign: 'center', fontSize: 16, fontWeight: "700", lineHeight: 24 }
+  emptyText: { color: THEME.textMuted, textAlign: 'center', fontSize: 16, fontWeight: "700", lineHeight: 24 },
+  notifOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', flexDirection: 'row' },
+  dismissArea: { flex: 1 },
+  notifPanel: { width: width * 0.85, backgroundColor: THEME.ui, height: '100%', borderTopLeftRadius: 35, borderBottomLeftRadius: 35, padding: 25, paddingTop: 60, borderLeftWidth: 1, borderLeftColor: THEME.accent },
+  panelHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 30 },
+  panelTitle: { color: THEME.text, fontSize: 20, fontWeight: "900", letterSpacing: 2 },
+  notifItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: THEME.bg, padding: 15, borderRadius: 20, marginBottom: 15, borderWidth: 1, borderColor: '#2D1B4D' },
+  notifAvatar: { width: 45, height: 45, borderRadius: 15 },
+  notifDesc: { color: THEME.textMuted, fontSize: 14, lineHeight: 20 },
+  notifTime: { color: THEME.accent, fontSize: 10, fontWeight: '700', marginTop: 4 },
+  notifTypeIndicator: { width: 4, height: 30, borderRadius: 2, marginLeft: 10 },
+  emptyNotif: { color: THEME.textMuted, textAlign: 'center', marginTop: 100, fontWeight: '700' }
 });

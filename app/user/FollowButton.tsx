@@ -1,18 +1,17 @@
 import React, { useEffect, useState } from "react";
 import { TouchableOpacity, Text, StyleSheet } from "react-native";
 import { auth, db } from "@/lib/firebase";
-import { doc, getDoc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, setDoc, deleteDoc, onSnapshot, serverTimestamp } from "firebase/firestore";
 
 export default function FollowButton({ targetUserId }: { targetUserId: string }) {
-  const currentUser = auth.currentUser?.uid;
+  const currentUser = auth.currentUser;
+  const currentUserId = currentUser?.uid;
   const [isFollowing, setIsFollowing] = useState(false);
 
-  // Use onSnapshot instead of getDoc so the button 
-  // updates instantly if you follow on another device
   useEffect(() => {
-    if (!currentUser || !targetUserId) return;
+    if (!currentUserId || !targetUserId) return;
 
-    const followRef = doc(db, "users", currentUser, "followbutton", "list", targetUserId);
+    const followRef = doc(db, "users", currentUserId, "followbutton", "list", targetUserId);
     
     return onSnapshot(followRef, (doc) => {
       setIsFollowing(doc.exists());
@@ -20,24 +19,38 @@ export default function FollowButton({ targetUserId }: { targetUserId: string })
   }, [targetUserId]);
 
   const toggleFollow = async () => {
-    if (!currentUser || !targetUserId) return;
+    if (!currentUserId || !targetUserId) return;
 
-    // PATHS MUST MATCH SOCIALSCREEN
-    const myFollowingRef = doc(db, "users", currentUser, "followbutton", "list", targetUserId);
-    const theirFollowersRef = doc(db, "users", targetUserId, "followers", "list", currentUser);
+    const myFollowingRef = doc(db, "users", currentUserId, "followbutton", "list", targetUserId);
+    const theirFollowersRef = doc(db, "users", targetUserId, "followers", "list", currentUserId);
 
     if (isFollowing) {
       await deleteDoc(myFollowingRef);
       await deleteDoc(theirFollowersRef);
     } else {
-      // We save minimal info here. The SocialScreen will fetch the full profile.
+      // 1. YOUR ORIGINAL FOLLOW LOGIC
       await setDoc(myFollowingRef, { 
         followedAt: new Date(),
         uid: targetUserId 
       });
       await setDoc(theirFollowersRef, { 
         followedAt: new Date(),
-        uid: currentUser 
+        uid: currentUserId 
+      });
+
+      // 2. NEW: TRIGGER NOTIFICATION FOR THE TARGET USER
+      // This makes the bell on their Social Screen show a red badge
+      const notifId = `${currentUserId}_follow_${Date.now()}`;
+      const notifRef = doc(db, "users", targetUserId, "notifications", notifId);
+
+      await setDoc(notifRef, {
+        type: "follow",
+        fromId: currentUserId,
+        fromUsername: currentUser?.displayName || "A Scholar",
+        fromImage: currentUser?.photoURL || "https://ui-avatars.com/api/?name=S",
+        message: "started following your research.",
+        read: false,
+        timestamp: serverTimestamp(),
       });
     }
   };
@@ -58,13 +71,13 @@ const styles = StyleSheet.create({
   btn: {
     paddingVertical: 10,
     paddingHorizontal: 20,
-    backgroundColor: "#FFD700", // Your Theme Gold
+    backgroundColor: "#FFD700", 
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
   },
   btnActive: {
-    backgroundColor: "#1E1135", // Darker UI color when following
+    backgroundColor: "#1E1135", 
     borderWidth: 1,
     borderColor: "#FFD700",
   },
