@@ -14,33 +14,24 @@
       "backgroundColor": "#FDF8F3"
     },
     "ios": {
-      "supportsTablet": false,
-      "bundleIdentifier": "com.writha"
+      "bundleIdentifier": "com.writha",
+      "supportsTablet": false
     },
     "android": {
       "package": "com.writha",
       "adaptiveIcon": {
-        "backgroundColor": "#FDF8F3",
-        "foregroundImage": "./assets/images/icon.png"
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#FDF8F3"
       }
     },
     "web": {
       "favicon": "./assets/images/icon.png"
     },
     "plugins": [
-      [
-        "expo-router",
-        {
-          "origin": "https://replit.com/"
-        }
-      ],
+      ["expo-router", { "origin": "https://replit.com/" }],
       "expo-font",
       "expo-web-browser",
       "@react-native-community/datetimepicker"
-    ],
-    "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
-    }
+    ]
   }
 }
