@@ -25,6 +25,7 @@ import {
   onSnapshot,
   doc,
   setDoc,
+  getDoc, // <- Added to fix the "Connecting" overwrite bug
   orderBy,
   limit,
   serverTimestamp,
@@ -196,16 +197,24 @@ export default function SocialScreen() {
     if (!userId) return;
     setSearchQuery("");
     const chatId = userId < targetUser.id ? `${userId}_${targetUser.id}` : `${targetUser.id}_${userId}`;
-    await setDoc(doc(db, "chats", chatId), {
-      participants: [userId, targetUser.id],
-      participantData: {
-        [userId]: { name: auth.currentUser?.displayName || "User", photo: auth.currentUser?.photoURL || "" },
-        [targetUser.id]: { name: targetUser.username || "User", photo: targetUser.photoURL || "" }
-      },
-      lastMessage: "Connecting...",
-      lastMessageAt: serverTimestamp(),
-      typingStatus: { [userId]: false, [targetUser.id]: false }
-    }, { merge: true });
+    
+    // --- FIX: Check if chat exists first so we don't overwrite real messages with "Connecting..." ---
+    const chatRef = doc(db, "chats", chatId);
+    const chatSnap = await getDoc(chatRef);
+
+    if (!chatSnap.exists()) {
+      await setDoc(chatRef, {
+        participants: [userId, targetUser.id],
+        participantData: {
+          [userId]: { name: auth.currentUser?.displayName || "User", photo: auth.currentUser?.photoURL || "" },
+          [targetUser.id]: { name: targetUser.username || "User", photo: targetUser.photoURL || "" }
+        },
+        lastMessage: "Tap to send a message!", // Looks much better than a stuck 'Connecting...'
+        lastMessageAt: serverTimestamp(),
+        typingStatus: { [userId]: false, [targetUser.id]: false }
+      });
+    }
+    
     router.push({ pathname: "/chat/[id]", params: { id: targetUser.id } } as any);
   };
 
@@ -223,12 +232,17 @@ export default function SocialScreen() {
     const userData = isChatView ? item.participantData?.[otherId] : item;
     const isTyping = isChatView && item.typingStatus?.[otherId];
 
+    // --- FIX: Safely check if the specific user's database says they are online ---
+    const isOnlineStatus = userData?.isOnline === true;
+
     return (
       <View style={styles.card}>
         <TouchableOpacity style={styles.cardMain} onPress={() => router.push({ pathname: "/profile/[id]", params: { id: otherId } } as any)}>
           <View style={styles.avatarWrap}>
             {(userData?.photoURL || userData?.photo || userData?.profilePic) && <Image source={{ uri: userData.photoURL || userData.photo || userData.profilePic }} style={styles.avatarImg} />}
-            {(item.isOnline || isChatView) && <View style={styles.onlineDot} />}
+            
+            {/* --- FIX: Only show dot if they are actually online --- */}
+            {isOnlineStatus && <View style={styles.onlineDot} />}
           </View>
           <View style={styles.info}>
             <Text style={styles.name}>{userData?.username || userData?.name || "Member"}</Text>
@@ -237,7 +251,8 @@ export default function SocialScreen() {
                 {isTyping ? "typing..." : item.lastMessage}
               </Text>
             ) : (
-              <Text style={styles.status}>{item.isOnline ? "🟢 Active" : isMutual ? "✨ Mutual" : "📖 Scholar"}</Text>
+              // --- FIX: Use our safe online check here ---
+              <Text style={styles.status}>{isOnlineStatus ? "🟢 Active" : isMutual ? "✨ Mutual" : "📖 Scholar"}</Text>
             )}
           </View>
         </TouchableOpacity>
