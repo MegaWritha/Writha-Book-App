@@ -1,7 +1,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack, useRouter, useSegments } from "expo-router"; 
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect, useState } from "react";
+import React, { use, useEffect, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -11,6 +11,7 @@ import { ThemeProvider } from "@/contexts/ThemeContext";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { auth, db } from "@/lib/firebase"; 
 import { doc, getDoc } from "firebase/firestore";
+import { registerForPushNotificationsAsync } from "@/lib/notification"; 
 
 import {
   useFonts, Lora_400Regular, Lora_500Medium, Lora_600SemiBold, Lora_700Bold,
@@ -18,6 +19,7 @@ import {
 import {
   Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold,
 } from "@expo-google-fonts/inter";
+import { initPresence } from "@/lib/presence";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -39,6 +41,24 @@ export default function RootLayout() {
     });
     return unsubscribe;
   }, []);
+
+  useEffect(() => {
+    const cleanup = initPresence();
+    return () => 
+      cleanup && cleanup(); // Ensure we call the cleanup function if it exists
+    }, [auth.currentUser]);
+
+    useEffect(() => {
+      const unsubscribe = 
+        auth.onAuthStateChanged((User) => {
+          if (User) {
+            registerForPushNotificationsAsync();
+            const cleanup = initPresence();
+            return () => cleanup && cleanup();
+          }
+        });
+      return () => unsubscribe();;
+    }, []);
 
   useEffect(() => {
     if (authLoading || !fontsLoaded) return;
