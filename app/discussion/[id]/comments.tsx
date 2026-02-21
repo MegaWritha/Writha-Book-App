@@ -30,7 +30,7 @@ export default function DiscussionComments() {
   const [currentUsername, setCurrentUsername] = useState("Writha User");
   const [menuVisible, setMenuVisible] = useState(false);
   const [selectedComment, setSelectedComment] = useState<any>(null);
-  const [isReplyMenu, setIsReplyMenu] = useState(false); // Track if we are deleting a reply
+  const [isReplyMenu, setIsReplyMenu] = useState(false); 
   const [parentOfSelected, setParentOfSelected] = useState<string | null>(null);
 
   // --- FETCH CURRENT USER REAL USERNAME ---
@@ -43,7 +43,10 @@ export default function DiscussionComments() {
         const userRef = doc(db, "users", user.uid);
         const userSnap = await getDoc(userRef);
         if (userSnap.exists()) {
-          setCurrentUsername(userSnap.data().username || userSnap.data().fullName || "Writha User");
+          // Check multiple possible name fields
+          const data = userSnap.data();
+          const name = data.username || data.fullName || data.displayName || "Writha User";
+          setCurrentUsername(name);
         }
       } catch (e) {
         console.error("Username fetch error:", e);
@@ -96,10 +99,19 @@ export default function DiscussionComments() {
     const user = auth.currentUser;
     if (!user) return Alert.alert("Join the conversation", "Please log in to comment.");
 
+    // Final safety check for username
+    let finalName = currentUsername;
+    if (finalName === "Writha User") {
+        const freshSnap = await getDoc(doc(db, "users", user.uid));
+        if(freshSnap.exists()) {
+            finalName = freshSnap.data().username || freshSnap.data().fullName || "Writha User";
+        }
+    }
+
     const payload = {
       text: text.trim(),
       userId: user.uid,
-      userName: currentUsername, // Fixed: Uses fetched username
+      userName: finalName, 
       userImg: user.photoURL || "https://picsum.photos/200",
       createdAt: serverTimestamp()
     };
@@ -129,11 +141,10 @@ export default function DiscussionComments() {
     }
   };
 
-  // Updated to handle both Parent Comments and Replies
   const handleDeleteComment = async () => {
     if (!selectedComment) return;
     
-    Alert.alert("Delete Comment", "Are you sure? This cannot be undone.", [
+    Alert.alert("Delete", "This cannot be undone. Delete anyway?", [
       { text: "Cancel", style: "cancel" },
       { 
         text: "Delete", 
@@ -141,10 +152,8 @@ export default function DiscussionComments() {
         onPress: async () => {
           try {
             if (isReplyMenu && parentOfSelected) {
-              // Delete a Reply
               await deleteDoc(doc(db, "feed", id as string, "comments", parentOfSelected, "replies", selectedComment.id));
             } else {
-              // Delete a Parent Comment
               await deleteDoc(doc(db, "feed", id as string, "comments", selectedComment.id));
               await updateDoc(doc(db, "feed", id as string), {
                 commentsCount: increment(-1)
@@ -160,7 +169,7 @@ export default function DiscussionComments() {
 
   const handleCopy = (txt: string) => {
     Clipboard.setString(txt);
-    Alert.alert("Copied", "Thought copied to clipboard");
+    Alert.alert("Copied", "Text copied to clipboard");
     setMenuVisible(false);
   };
 
@@ -179,7 +188,6 @@ export default function DiscussionComments() {
       style={styles.main}
       keyboardVerticalOffset={100}
     >
-      {/* --- HEADER --- */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={28} color="#FFD700" />
@@ -206,20 +214,16 @@ export default function DiscussionComments() {
                 </TouchableOpacity>
                 <View style={styles.bubble}>
                   <View style={styles.bubbleTop}>
-                    <Text style={styles.uName}>{item.userName}</Text>
-                    {item.userId !== auth.currentUser?.uid && (
-                      <TouchableOpacity onPress={() => handleFollow(item.userId)} style={styles.followBadge}>
-                        <Text style={styles.followTxt}>Follow</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                  <Text style={styles.uText}>{item.text}</Text>
-                  
-                  <View style={styles.actionRow}>
-                    <TouchableOpacity onPress={() => setReplyTo(item)} style={styles.action}>
-                      <Text style={styles.actionText}>Reply</Text>
-                    </TouchableOpacity>
+                    <View style={styles.nameRow}>
+                        <Text style={styles.uName}>{item.userName}</Text>
+                        {item.userId !== auth.currentUser?.uid && (
+                        <TouchableOpacity onPress={() => handleFollow(item.userId)} style={styles.followBadge}>
+                            <Text style={styles.followTxt}>Follow</Text>
+                        </TouchableOpacity>
+                        )}
+                    </View>
                     
+                    {/* Ellipsis positioned top-right */}
                     <TouchableOpacity 
                       onPress={() => { 
                         setSelectedComment(item); 
@@ -227,14 +231,24 @@ export default function DiscussionComments() {
                         setParentOfSelected(null);
                         setMenuVisible(true); 
                       }} 
-                      style={styles.action}
                     >
-                      <Ionicons name="ellipsis-horizontal" size={18} color="#A78BFA" />
+                      <Ionicons name="ellipsis-horizontal" size={20} color="#A78BFA" />
                     </TouchableOpacity>
+                  </View>
 
-                    <TouchableOpacity style={styles.action}>
-                      <Text style={styles.actionText}>Send Request</Text>
+                  <Text style={styles.uText}>{item.text}</Text>
+                  
+                  <View style={styles.actionRow}>
+                    <TouchableOpacity onPress={() => setReplyTo(item)} style={styles.action}>
+                      <Text style={styles.actionText}>Reply</Text>
                     </TouchableOpacity>
+                    
+                    {/* Send Request only for others */}
+                    {item.userId !== auth.currentUser?.uid && (
+                        <TouchableOpacity style={styles.action}>
+                            <Text style={styles.actionText}>Send Request</Text>
+                        </TouchableOpacity>
+                    )}
                   </View>
                 </View>
               </View>
@@ -300,7 +314,6 @@ export default function DiscussionComments() {
         </View>
       </View>
 
-      {/* --- ACTIONS MENU MODAL --- */}
       <Modal visible={menuVisible} transparent animationType="slide">
         <TouchableOpacity style={styles.modalOverlay} onPress={() => setMenuVisible(false)}>
           <View style={styles.menuContainer}>
@@ -338,7 +351,6 @@ export default function DiscussionComments() {
           </View>
         </TouchableOpacity>
       </Modal>
-
     </KeyboardAvoidingView>
   );
 }
@@ -354,8 +366,9 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row' },
   pfp: { width: 45, height: 45, borderRadius: 22.5, borderWidth: 1.5, borderColor: '#FFD700' },
   bubble: { flex: 1, marginLeft: 12, backgroundColor: '#1E1135', padding: 15, borderRadius: 20, borderWidth: 1, borderColor: '#333' },
-  bubbleTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
-  uName: { color: '#FFD700', fontWeight: 'bold', fontSize: 13 },
+  bubbleTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 5 },
+  nameRow: { flexDirection: 'row', alignItems: 'center' },
+  uName: { color: '#FFD700', fontWeight: 'bold', fontSize: 13, marginRight: 8 },
   followBadge: { backgroundColor: '#4C1D95', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
   followTxt: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
   uText: { color: '#EEE', fontSize: 14, lineHeight: 20 },
