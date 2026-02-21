@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo } from "react";
 import {
   View, Text, StyleSheet, ScrollView, Image, TouchableOpacity,
   TextInput, Dimensions, StatusBar, ActivityIndicator, Alert, FlatList, Modal,
-  KeyboardAvoidingView, Platform, Switch, Keyboard
+  KeyboardAvoidingView, Platform, Switch, Keyboard, Share
 } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -11,12 +11,12 @@ import { useRouter } from "expo-router";
 import { auth, db } from "../../lib/firebase";
 import { 
   collection, query, onSnapshot, doc, limit, 
-  orderBy, addDoc, serverTimestamp, updateDoc, increment 
+  orderBy, addDoc, serverTimestamp, updateDoc, increment,
+  arrayUnion, arrayRemove
 } from "firebase/firestore";
 import { useFeedback } from "../../components/FeedbackProvider"; 
 import { WrithaButton } from "../../components/WrithaButton";    
 import { EmptyState } from "../../components/EmptyState";       
-import { submitToGatekeeper } from "../../lib/submissions";     
 
 const { width } = Dimensions.get("window");
 
@@ -55,13 +55,13 @@ export default function HomeScreen() {
 
   // Group books by genre dynamically
   const groupedBooks = useMemo(() => {
-    const groups: { [key: string]: any[] } = {};
+    const groupsMap: { [key: string]: any[] } = {};
     books.forEach(book => {
       const genre = book.genre || "Other";
-      if (!groups[genre]) groups[genre] = [];
-      groups[genre].push(book);
+      if (!groupsMap[genre]) groupsMap[genre] = [];
+      groupsMap[genre].push(book);
     });
-    return groups;
+    return groupsMap;
   }, [books]);
 
   useEffect(() => {
@@ -75,8 +75,7 @@ export default function HomeScreen() {
     });
 
     const unsubBooks = onSnapshot(query(collection(db, "books"), limit(20)), (snap) => {
-      const bookList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setBooks(bookList);
+      setBooks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
     const unsubWeaves = onSnapshot(query(collection(db, "weaves"), limit(10)), (snap) => {
@@ -87,7 +86,8 @@ export default function HomeScreen() {
       setGroups(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
-    const unsubDisc = onSnapshot(query(collection(db, "discussions"), orderBy("createdAt", "desc"), limit(15)), (snap) => {
+    // Make sure this matches your DB collection (feed or global_feed)
+    const unsubDisc = onSnapshot(query(collection(db, "feed"), orderBy("createdAt", "desc"), limit(15)), (snap) => {
       setDiscussions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       setLoading(false);
     }, () => setLoading(false));
@@ -95,13 +95,20 @@ export default function HomeScreen() {
     return () => { unsubProfile(); unsubBooks(); unsubWeaves(); unsubGroups(); unsubDisc(); };
   }, [user]);
 
-  const handleLikeBook = async (bookId: string) => {
+  // Unified Like Toggle Logic
+  const handleToggleLike = async (collectionName: string, id: string, likedByArray: string[] = []) => {
+    if (!user) return;
+    const isLiked = likedByArray.includes(user.uid);
+    const ref = doc(db, collectionName, id);
+    
     try {
-      const bookRef = doc(db, "books", bookId);
-      await updateDoc(bookRef, { likesCount: increment(1) });
-      showFeedback("Liked!", "success");
+      if (isLiked) {
+        await updateDoc(ref, { likesCount: increment(-1), likedBy: arrayRemove(user.uid) });
+      } else {
+        await updateDoc(ref, { likesCount: increment(1), likedBy: arrayUnion(user.uid) });
+      }
     } catch (e) {
-      showFeedback("Error liking book", "error");
+      showFeedback("Error updating like", "error");
     }
   };
 
@@ -109,13 +116,15 @@ export default function HomeScreen() {
     if (!newPost.trim()) return;
     setPosting(true);
     try {
-      await addDoc(collection(db, "discussions"), {
+      await addDoc(collection(db, "feed"), {
         content: newPost,
         userId: user!.uid,
         userName: displayName || "User",
         userPhoto: user?.photoURL || "https://picsum.photos/100",
         likesCount: 0,
         commentsCount: 0,
+        likedBy: [],
+        type: "discussion",
         publishToWeb: publishToWeb,
         createdAt: serverTimestamp() 
       });
@@ -130,10 +139,24 @@ export default function HomeScreen() {
     }
   };
 
+  const handleShare = async (text: string) => {
+    try {
+      await Share.share({ message: `Check out this discussion on Writha:\n\n"${text}"` });
+    } catch (error) {
+      console.log("Error sharing", error);
+    }
+  };
+
   const handleSearch = () => {
     const q = searchQuery.toLowerCase();
-    const filtered = books.filter(b => b.title?.toLowerCase().includes(q) || b.genre?.toLowerCase().includes(q));
-    setSearchResults(filtered);
+    if (!q) return resetSearch();
+
+    // Search across all data types
+    const filteredBooks = books.filter(b => b.title?.toLowerCase().includes(q) || b.genre?.toLowerCase().includes(q)).map(b => ({...b, searchType: 'book'}));
+    const filteredWeaves = weaves.filter(w => w.title?.toLowerCase().includes(q)).map(w => ({...w, searchType: 'weave'}));
+    const filteredDiscussions = discussions.filter(d => d.content?.toLowerCase().includes(q)).map(d => ({...d, searchType: 'discussion'}));
+    
+    setSearchResults([...filteredBooks, ...filteredWeaves, ...filteredDiscussions]);
     Keyboard.dismiss();
   };
 
@@ -142,39 +165,89 @@ export default function HomeScreen() {
     setSearchQuery("");
   };
 
+  const handleJoinGroup = (group: any) => {
+    if (group.isPrivate) {
+      Alert.alert("Access Denied", "This group is private and requires an invitation.");
+      return;
+    }
+    if (group.maxMembers && (group.membersCount || 0) >= group.maxMembers) {
+      Alert.alert("Group Full", "This group has reached its maximum member capacity.");
+      return;
+    }
+
+    Alert.alert("Join Group", `Are you sure you want to join "${group.name}"?`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Join", onPress: async () => {
+          try {
+            await updateDoc(doc(db, "groups", group.id), {
+              members: arrayUnion(user?.uid),
+              membersCount: increment(1)
+            });
+            showFeedback(`Welcome to ${group.name}!`, "success");
+            router.push(`/group/${group.id}`);
+          } catch (e) {
+            showFeedback("Failed to join group", "error");
+          }
+        }
+      }
+    ]);
+  };
+
   const openFullResearchForm = () => {
     setFabMenuOpen(false);
     router.push("/create"); 
   };
 
-  const renderBookItem = ({ item }: { item: any }) => (
-    <View style={styles.bookWrapper}>
-      <TouchableOpacity onPress={() => router.push(`/book/${item.id}`)}>
-        <View style={styles.goldBorder}>
-          <Image source={{ uri: item.coverUrl || item.cover || "https://picsum.photos/200/300" }} style={styles.bookCover} />
-          <View style={styles.priceTag}>
-            <Text style={styles.priceText}>{item.price > 0 ? `$${item.price}` : "FREE"}</Text>
-          </View>
-        </View>
-        <Text style={styles.bookTitle} numberOfLines={1}>{item.title}</Text>
+  // Dynamic Search Renderer
+  const renderSearchItem = ({ item }: { item: any }) => {
+    if (item.searchType === 'book') return renderBookItem({item});
+    
+    return (
+      <TouchableOpacity 
+        style={styles.searchResultCard} 
+        onPress={() => { if (item.searchType === 'weave') {
+          router.push(`/weave/${item.id}`);
+      } else if (item.searchType === 'discussion') {
+        router.push(`/discussion/${item.id}/comments`);
+      } 
+    }}
+      >
+        <Text style={styles.searchResultType}>{item.searchType.toUpperCase()}</Text>
+        <Text style={styles.searchResultTitle} numberOfLines={2}>{item.title || item.content}</Text>
       </TouchableOpacity>
-      <View style={styles.bookActionRow}>
-        <TouchableOpacity style={styles.actionIcon} onPress={() => router.push(`/book/${item.id}`)}>
-          <Ionicons name="heart-outline" size={16} color="#e70505" />
-          <Text style={styles.actionText}>{item.likesCount || 0}</Text>
+    );
+  };
+
+  const renderBookItem = ({ item }: { item: any }) => {
+    const isLiked = item.likedBy?.includes(user?.uid);
+    return (
+      <View style={styles.bookWrapper}>
+        <TouchableOpacity onPress={() => router.push(`/book/${item.id}`)}>
+          <View style={styles.goldBorder}>
+            <Image source={{ uri: item.coverUrl || item.cover || "https://picsum.photos/200/300" }} style={styles.bookCover} />
+            <View style={styles.priceTag}>
+              <Text style={styles.priceText}>{item.price > 0 ? `$${item.price}` : "FREE"}</Text>
+            </View>
+          </View>
+          <Text style={styles.bookTitle} numberOfLines={1}>{item.title}</Text>
         </TouchableOpacity>
-        {/* REDIRECTED TO COMMENTS.TSX */}
-        <TouchableOpacity style={styles.actionIcon} onPress={() => router.push(`/book/${item.id}/comments`)}>
-          <Ionicons name="chatbubble-outline" size={16} color="#A78BFA" />
-          <Text style={styles.actionText}>Comments</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.actionIcon} onPress={() => router.push(`/weave/${item.id}`)}>
-          <MaterialCommunityIcons name="pencil-outline" size={16} color="#FFD700" />
-          <Text style={styles.actionText}>Weave</Text>
-        </TouchableOpacity>
+        <View style={styles.bookActionRow}>
+          <TouchableOpacity style={styles.actionIcon} onPress={() => handleToggleLike("books", item.id, item.likedBy)}>
+            <Ionicons name={isLiked ? "heart" : "heart-outline"} size={16} color={isLiked ? "#e70505" : "#A78BFA"} />
+            <Text style={styles.actionText}>{item.likesCount || 0}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionIcon} onPress={() => router.push(`/book/${item.id}/comments`)}>
+            <Ionicons name="chatbubble-outline" size={16} color="#A78BFA" />
+            <Text style={styles.actionText}>{item.commentsCount || 0}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionIcon} onPress={() => router.push({ pathname: "/weave/create", params: { bookId: item.id } })}>
+            <MaterialCommunityIcons name="pencil-outline" size={16} color="#FFD700" />
+            <Text style={styles.actionText}>Weave</Text>
+          </TouchableOpacity>
+        </View>
       </View>
-    </View>
-  );
+    );
+  };
 
   if (loading) return <View style={styles.center}><ActivityIndicator size="large" color="#FFD700" /></View>;
 
@@ -200,13 +273,13 @@ export default function HomeScreen() {
         <Ionicons name="search" size={20} color="#7C3AED" />
         <TextInput 
           style={styles.searchField}
-          placeholder="Search for books, users, weaves..."
+          placeholder="Search for books, weaves, discussions..."
           placeholderTextColor="#6D28D9"
           value={searchQuery}
           onChangeText={setSearchQuery}
           onSubmitEditing={handleSearch}
         />
-        {searchResults && (
+        {searchQuery.length > 0 && (
           <TouchableOpacity onPress={resetSearch}>
             <Ionicons name="close-circle" size={22} color="#FFF" />
           </TouchableOpacity>
@@ -220,11 +293,11 @@ export default function HomeScreen() {
             <TouchableOpacity style={styles.backBtn} onPress={resetSearch}>
               <Text style={styles.backBtnTxt}>← Back to Feed</Text>
             </TouchableOpacity>
-            {searchResults.length === 0 && <EmptyState title="No matches" message="No books found." />}
+            {searchResults.length === 0 && <EmptyState title="No matches" message="Try searching for something else." />}
             <FlatList 
               horizontal data={searchResults}
-              renderItem={renderBookItem}
-              keyExtractor={(item) => `search-${item.id}`}
+              renderItem={renderSearchItem}
+              keyExtractor={(item, index) => `search-${item.id}-${index}`}
             />
           </View>
         ) : (
@@ -268,26 +341,38 @@ export default function HomeScreen() {
                 <EmptyState title="Quiet here..." message="The weave is quiet... start a discussion!" />
               ) : (
                 <View style={styles.bubbleGrid}>
-                  {discussions.map((item) => (
-                    <View key={item.id} style={styles.bubbleCard}>
-                      <TouchableOpacity onPress={() => router.push(`/create`)}>
-                        <View style={styles.bubbleHeader}>
-                          <Image source={{ uri: item.userPhoto || "https://picsum.photos/50" }} style={styles.bubblePfp} />
-                          <Text style={styles.bubbleUser} numberOfLines={1}>{item.userName}</Text>
+                  {discussions.map((item) => {
+                    const isLiked = item.likedBy?.includes(user?.uid);
+                    return (
+                      <View key={item.id} style={styles.bubbleCard}>
+                        <TouchableOpacity onPress={() => router.push(`/discussion/${item.id}/comments`)}>
+                          <View style={styles.bubbleHeader}>
+                            <Image source={{ uri: item.userPhoto || "https://picsum.photos/50" }} style={styles.bubblePfp} />
+                            <Text style={styles.bubbleUser} numberOfLines={1}>{item.userName}</Text>
+                          </View>
+                          <Text style={styles.bubbleText} numberOfLines={3}>{item.content}</Text>
+                        </TouchableOpacity>
+                        <View style={styles.interactRow}>
+                          <TouchableOpacity style={styles.iconBtn} onPress={() => handleToggleLike("feed", item.id, item.likedBy)}>
+                            <Ionicons name={isLiked ? "heart" : "heart-outline"} size={14} color={isLiked ? "#e70505" : "#A78BFA"} />
+                            <Text style={styles.iconCount}>{item.likesCount || 0}</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push(`/discussion/${item.id}/comments`)}>
+                            <Ionicons name="chatbubble-outline" size={14} color="#A78BFA" />
+                            <Text style={styles.iconCount}>{item.commentsCount || 0}</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={styles.iconBtn} onPress={() => handleShare(item.content)}>
+                            <Ionicons name="share-social-outline" size={14} color="#FFD700" />
+                          </TouchableOpacity>
                         </View>
-                        <Text style={styles.bubbleText} numberOfLines={3}>{item.content}</Text>
-                      </TouchableOpacity>
-                      <View style={styles.interactRow}>
-                        <TouchableOpacity style={styles.iconBtn}><Ionicons name="heart-outline" size={14} color="#FF4D4D" /><Text style={styles.iconCount}>{item.likesCount || 0}</Text></TouchableOpacity>
-                        <TouchableOpacity style={styles.iconBtn} onPress={() => router.push(`/create`)}><Ionicons name="chatbubble-outline" size={14} color="#A78BFA" /><Text style={styles.iconCount}>{item.commentsCount || 0}</Text></TouchableOpacity>
                       </View>
-                    </View>
-                  ))}
+                    );
+                  })}
                 </View>
               )}
             </View>
 
-            {/* 4. DYNAMIC GENRE SECTIONS (ROMANCE, SCI-FI, ETC) */}
+            {/* 4. DYNAMIC GENRE SECTIONS */}
             {Object.keys(groupedBooks).map((genre) => (
               <View key={genre} style={styles.section}>
                 <SectionHeader title={genre} onSeeAll={() => {}} />
@@ -312,10 +397,10 @@ export default function HomeScreen() {
                         <Image source={{ uri: item.image || "https://picsum.photos/200" }} style={styles.groupImg} />
                       </TouchableOpacity>
                       <Text style={styles.groupName} numberOfLines={1}>{item.name}</Text>
-                      <TouchableOpacity style={styles.joinBtn}>
+                      <TouchableOpacity style={styles.joinBtn} onPress={() => handleJoinGroup(item)}>
                         <Text style={styles.joinBtnTxt}>Join</Text>
                       </TouchableOpacity>
-                      {item.isPublic && <Text style={styles.publicText}>Public</Text>}
+                      {item.isPrivate ? <Text style={styles.publicText}>Private</Text> : <Text style={styles.publicText}>Public</Text>}
                     </View>
                   )}
                 />
@@ -412,9 +497,12 @@ const styles = StyleSheet.create({
   bubblePfp: { width: 18, height: 18, borderRadius: 9, marginRight: 6 },
   bubbleUser: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
   bubbleText: { color: '#CCC', fontSize: 11, height: 45 },
-  interactRow: { flexDirection: 'row', marginTop: 10, borderTopWidth: 0.5, borderTopColor: '#333', paddingTop: 8 },
-  iconBtn: { flexDirection: 'row', alignItems: 'center', marginRight: 15 },
+  interactRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, borderTopWidth: 0.5, borderTopColor: '#333', paddingTop: 8 },
+  iconBtn: { flexDirection: 'row', alignItems: 'center' },
   iconCount: { color: '#888', fontSize: 10, marginLeft: 4 },
+  searchResultCard: { backgroundColor: '#1E1135', width: 180, padding: 15, borderRadius: 12, marginRight: 15, marginLeft: 20, borderWidth: 1, borderColor: '#FFD700', justifyContent: 'center' },
+  searchResultType: { color: '#A78BFA', fontSize: 10, fontWeight: 'bold', marginBottom: 5 },
+  searchResultTitle: { color: '#FFF', fontSize: 14, fontWeight: 'bold' },
   fab: { position: 'absolute', bottom: 30, right: 25, backgroundColor: '#FFD700', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 5, zIndex: 100 },
   fabMenu: { position: 'absolute', bottom: 100, right: 25, alignItems: 'flex-end', zIndex: 99 },
   fabMenuItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },

@@ -102,7 +102,7 @@ export default function UserList() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.brandTitle}>WRITHA SCHOLARS</Text>
+      <Text style={styles.brandTitle}>WRITHA USERS</Text>
       
       <View style={styles.searchBar}>
         <Feather name="search" size={18} color={THEME.textMuted} />
@@ -143,7 +143,7 @@ export default function UserList() {
                 <View style={styles.textContainer}>
                     <Text style={styles.userName}>@{item.username}</Text>
                     <Text style={styles.userBio} numberOfLines={1}>
-                        {item.bio || "Scholar at Writha."}
+                        {item.bio || "User at Writha."}
                     </Text>
                 </View>
               </View>
@@ -159,7 +159,7 @@ export default function UserList() {
           )}
           ListEmptyComponent={
             searchQuery.length > 1 && !loading ? (
-                <Text style={styles.emptyText}>No scholars found.</Text>
+                <Text style={styles.emptyText}>No users found.</Text>
             ) : null
           }
         />

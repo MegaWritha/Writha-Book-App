@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { 
   View, Text, StyleSheet, FlatList, TextInput, 
   TouchableOpacity, Image, ActivityIndicator, 
-  KeyboardAvoidingView, Platform, Alert
+  KeyboardAvoidingView, Platform, Alert, Modal, Share, Clipboard
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -13,10 +13,11 @@ import {
   collection, addDoc, query, orderBy, 
   onSnapshot, serverTimestamp, getDocs, doc, updateDoc, arrayUnion, 
   increment,
-  deleteDoc
+  deleteDoc,
+  getDoc
 } from "firebase/firestore";
 
-export default function BookComments() {
+export default function DiscussionComments() {
   const { id } = useLocalSearchParams(); 
   const router = useRouter();
   
@@ -25,17 +26,42 @@ export default function BookComments() {
   const [loading, setLoading] = useState(true);
   const [replyTo, setReplyTo] = useState<any>(null);
 
+  // New States for Username and Menu
+  const [currentUsername, setCurrentUsername] = useState("Writha User");
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [selectedComment, setSelectedComment] = useState<any>(null);
+  const [isReplyMenu, setIsReplyMenu] = useState(false); // Track if we are deleting a reply
+  const [parentOfSelected, setParentOfSelected] = useState<string | null>(null);
+
+  // --- FETCH CURRENT USER REAL USERNAME ---
+  useEffect(() => {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const fetchUsername = async () => {
+      try {
+        const userRef = doc(db, "users", user.uid);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+          setCurrentUsername(userSnap.data().username || userSnap.data().fullName || "Writha User");
+        }
+      } catch (e) {
+        console.error("Username fetch error:", e);
+      }
+    };
+    fetchUsername();
+  }, []);
+
   // --- FETCH COMMENTS & SUB-COMMENTS ---
   useEffect(() => {
     if (!id) {
-      setLoading(false); // If no ID, stop loading
+      setLoading(false); 
       return;
     }
 
     const q = query(collection(db, "feed", id as string, "comments"), orderBy("createdAt", "desc"));
     
     const unsub = onSnapshot(q, async (snap) => {
-      // If there are no comments, stop loading and clear list
       if (snap.empty) {
         setComments([]);
         setLoading(false);
@@ -45,8 +71,6 @@ export default function BookComments() {
       try {
         const parentComments = await Promise.all(snap.docs.map(async (d) => {
           const data = d.data();
-          
-          // Only fetch replies if you really need them nested
           const subSnap = await getDocs(query(collection(db, "feed", id as string, "comments", d.id, "replies"), orderBy("createdAt", "asc")));
           const replies = subSnap.docs.map(sd => ({ id: sd.id, ...sd.data() }));
           
@@ -57,7 +81,6 @@ export default function BookComments() {
       } catch (err) {
         console.error("Fetch Error:", err);
       } finally {
-        // ALWAYS stop loading after the first successful attempt
         setLoading(false);
       }
     }, (error) => {
@@ -71,22 +94,22 @@ export default function BookComments() {
   const handlePost = async () => {
     if (!text.trim() || !id) return;
     const user = auth.currentUser;
-    if (!user) return Alert.alert("Join the weave", "Please log in to comment.");
+    if (!user) return Alert.alert("Join the conversation", "Please log in to comment.");
 
     const payload = {
       text: text.trim(),
       userId: user.uid,
-      userName: user.displayName || "Writha User",
+      userName: currentUsername, // Fixed: Uses fetched username
       userImg: user.photoURL || "https://picsum.photos/200",
       createdAt: serverTimestamp()
     };
 
     try {
       if (replyTo) {
-        await addDoc(collection(db, "books", id as string, "comments", replyTo.id, "replies"), payload);
+        await addDoc(collection(db, "feed", id as string, "comments", replyTo.id, "replies"), payload);
       } else {
-        await addDoc(collection(db, "books", id as string, "comments"), payload);
-        await updateDoc(doc(db, "books", id as string), { commentsCount: increment(1) }); // Increment comment count for feed item
+        await addDoc(collection(db, "feed", id as string, "comments"), payload);
+        await updateDoc(doc(db, "feed", id as string), { commentsCount: increment(1) }); 
       }
       setText("");
       setReplyTo(null);
@@ -106,28 +129,49 @@ export default function BookComments() {
     }
   };
 
-  const handleDeleteComment = async (commentId: string) => {
-  Alert.alert("Delete Comment", "Are you sure? This cannot be undone.", [
-    { text: "Cancel", style: "cancel" },
-    { 
-      text: "Delete", 
-      style: "destructive", 
-      onPress: async () => {
-        try {
-          // 1. Delete the comment document
-          await deleteDoc(doc(db, "feed", id as string, "comments", commentId));
-          
-          // 2. Reduce the count on the main post
-          await updateDoc(doc(db, "feed", id as string), {
-            commentsCount: increment(-1)
-          });
-        } catch (e) {
-          console.error("Delete Error:", e);
-        }
-      } 
+  // Updated to handle both Parent Comments and Replies
+  const handleDeleteComment = async () => {
+    if (!selectedComment) return;
+    
+    Alert.alert("Delete Comment", "Are you sure? This cannot be undone.", [
+      { text: "Cancel", style: "cancel" },
+      { 
+        text: "Delete", 
+        style: "destructive", 
+        onPress: async () => {
+          try {
+            if (isReplyMenu && parentOfSelected) {
+              // Delete a Reply
+              await deleteDoc(doc(db, "feed", id as string, "comments", parentOfSelected, "replies", selectedComment.id));
+            } else {
+              // Delete a Parent Comment
+              await deleteDoc(doc(db, "feed", id as string, "comments", selectedComment.id));
+              await updateDoc(doc(db, "feed", id as string), {
+                commentsCount: increment(-1)
+              });
+            }
+          } catch (e) {
+            console.error("Delete Error:", e);
+          }
+        } 
+      }
+    ]);
+  };
+
+  const handleCopy = (txt: string) => {
+    Clipboard.setString(txt);
+    Alert.alert("Copied", "Thought copied to clipboard");
+    setMenuVisible(false);
+  };
+
+  const handleShare = async (txt: string) => {
+    try {
+      await Share.share({ message: txt });
+      setMenuVisible(false);
+    } catch (e) {
+      console.error(e);
     }
-  ]);
-};
+  };
 
   return (
     <KeyboardAvoidingView 
@@ -163,9 +207,11 @@ export default function BookComments() {
                 <View style={styles.bubble}>
                   <View style={styles.bubbleTop}>
                     <Text style={styles.uName}>{item.userName}</Text>
-                    <TouchableOpacity onPress={() => handleFollow(item.userId)} style={styles.followBadge}>
-                      <Text style={styles.followTxt}>Follow</Text>
-                    </TouchableOpacity>
+                    {item.userId !== auth.currentUser?.uid && (
+                      <TouchableOpacity onPress={() => handleFollow(item.userId)} style={styles.followBadge}>
+                        <Text style={styles.followTxt}>Follow</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                   <Text style={styles.uText}>{item.text}</Text>
                   
@@ -173,11 +219,19 @@ export default function BookComments() {
                     <TouchableOpacity onPress={() => setReplyTo(item)} style={styles.action}>
                       <Text style={styles.actionText}>Reply</Text>
                     </TouchableOpacity>
-                    {item.userId === auth.currentUser?.uid && (
-                    <TouchableOpacity onPress={() => handleDeleteComment(item.id)} style={styles.action}>
-                        <Ionicons name="trash-outline" size={14} color="#EF4444" />
+                    
+                    <TouchableOpacity 
+                      onPress={() => { 
+                        setSelectedComment(item); 
+                        setIsReplyMenu(false);
+                        setParentOfSelected(null);
+                        setMenuVisible(true); 
+                      }} 
+                      style={styles.action}
+                    >
+                      <Ionicons name="ellipsis-horizontal" size={18} color="#A78BFA" />
                     </TouchableOpacity>
-                    )}
+
                     <TouchableOpacity style={styles.action}>
                       <Text style={styles.actionText}>Send Request</Text>
                     </TouchableOpacity>
@@ -189,9 +243,23 @@ export default function BookComments() {
               {item.replies?.map((reply: any) => (
                 <View key={reply.id} style={styles.replyRow}>
                   <View style={styles.replyLine} />
-                  <Image source={{uri: reply.userImg}} style={styles.replyPfp} />
+                  <TouchableOpacity onPress={() => router.push(`/profile/${reply.userId}`)}>
+                    <Image source={{uri: reply.userImg}} style={styles.replyPfp} />
+                  </TouchableOpacity>
                   <View style={[styles.bubble, {backgroundColor: '#130B21'}]}>
-                    <Text style={styles.uName}>{reply.userName}</Text>
+                    <View style={styles.bubbleTop}>
+                       <Text style={styles.uName}>{reply.userName}</Text>
+                       <TouchableOpacity 
+                        onPress={() => { 
+                          setSelectedComment(reply); 
+                          setIsReplyMenu(true);
+                          setParentOfSelected(item.id);
+                          setMenuVisible(true); 
+                        }}
+                       >
+                         <Ionicons name="ellipsis-horizontal" size={14} color="#A78BFA" />
+                       </TouchableOpacity>
+                    </View>
                     <Text style={styles.uText}>{reply.text}</Text>
                   </View>
                 </View>
@@ -201,7 +269,7 @@ export default function BookComments() {
           ListEmptyComponent={
             <View style={styles.empty}>
               <MaterialCommunityIcons name="comment-text-outline" size={50} color="#333" />
-              <Text style={styles.emptyTxt}>The scrolls are empty. Be the first to speak.</Text>
+              <Text style={styles.emptyTxt}>Comments empty. Be the first to speak.</Text>
             </View>
           }
         />
@@ -231,6 +299,46 @@ export default function BookComments() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* --- ACTIONS MENU MODAL --- */}
+      <Modal visible={menuVisible} transparent animationType="slide">
+        <TouchableOpacity style={styles.modalOverlay} onPress={() => setMenuVisible(false)}>
+          <View style={styles.menuContainer}>
+            <View style={styles.menuIndicator} />
+            
+            <TouchableOpacity style={styles.menuItem} onPress={() => handleShare(selectedComment?.text)}>
+              <Ionicons name="share-outline" size={20} color="#FFF" />
+              <Text style={styles.menuText}>Share Thought</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuItem} onPress={() => handleCopy(selectedComment?.text)}>
+              <Ionicons name="copy-outline" size={20} color="#FFF" />
+              <Text style={styles.menuText}>Copy Text</Text>
+            </TouchableOpacity>
+
+            {selectedComment?.userId === auth.currentUser?.uid && (
+              <>
+                <TouchableOpacity style={styles.menuItem} onPress={() => setMenuVisible(false)}>
+                  <Ionicons name="create-outline" size={20} color="#FFF" />
+                  <Text style={styles.menuText}>Edit Comment</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={styles.menuItem} 
+                  onPress={() => { 
+                    handleDeleteComment(); 
+                    setMenuVisible(false); 
+                  }}
+                >
+                  <Ionicons name="trash-outline" size={20} color="#EF4444" />
+                  <Text style={[styles.menuText, {color: '#EF4444'}]}>Delete</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
     </KeyboardAvoidingView>
   );
 }
@@ -251,10 +359,9 @@ const styles = StyleSheet.create({
   followBadge: { backgroundColor: '#4C1D95', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
   followTxt: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
   uText: { color: '#EEE', fontSize: 14, lineHeight: 20 },
-  actionRow: { flexDirection: 'row', marginTop: 12 },
+  actionRow: { flexDirection: 'row', marginTop: 12, alignItems: 'center' },
   action: { marginRight: 20 },
   actionText: { color: '#A78BFA', fontSize: 11, fontWeight: 'bold' },
-  // Replies
   replyRow: { flexDirection: 'row', marginLeft: 45, marginTop: 10 },
   replyLine: { width: 2, backgroundColor: '#333', marginRight: 10, marginBottom: 15 },
   replyPfp: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: '#A78BFA' },
@@ -265,5 +372,10 @@ const styles = StyleSheet.create({
   replyingText: { color: '#FFD700', fontSize: 11 },
   inputRow: { flexDirection: 'row', padding: 15, alignItems: 'center', paddingBottom: Platform.OS === 'ios' ? 40 : 15 },
   input: { flex: 1, color: '#FFF', fontSize: 15, maxHeight: 100 },
-  sendBtn: { backgroundColor: '#FFD700', width: 45, height: 45, borderRadius: 22.5, justifyContent: 'center', alignItems: 'center', marginLeft: 10 }
+  sendBtn: { backgroundColor: '#FFD700', width: 45, height: 45, borderRadius: 22.5, justifyContent: 'center', alignItems: 'center', marginLeft: 10 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
+  menuContainer: { backgroundColor: '#1E1135', borderTopLeftRadius: 25, borderTopRightRadius: 25, padding: 20, paddingBottom: 40, borderTopWidth: 1, borderTopColor: '#4C1D95' },
+  menuIndicator: { width: 40, height: 5, backgroundColor: '#333', borderRadius: 3, alignSelf: 'center', marginBottom: 20 },
+  menuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 15, borderBottomWidth: 0.5, borderBottomColor: '#333' },
+  menuText: { color: '#FFF', marginLeft: 15, fontSize: 16, fontWeight: '500' },
 });

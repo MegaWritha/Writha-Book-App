@@ -39,7 +39,7 @@ export default function EditWeave() {
     setIsSubmitting(true);
     try {
       const weaveRef = doc(db, "weaves", id as string);
-      const feedRef = doc(db, "global_feed", id as string);
+      const feedRef = doc(db, "feed", id as string);
       
       const updateData = { title, content, updatedAt: new Date() };
       

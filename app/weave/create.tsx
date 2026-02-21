@@ -56,7 +56,7 @@ export default function CreateWeave() {
 
       // 2. Mirror to global_feed immediately
       if (isPublic) {
-        await setDoc(doc(db, "global_feed", docRef.id), {
+        await setDoc(doc(db, "feed", docRef.id), {
           ...weaveData,
           likesCount: 0,
           likedBy: [],
