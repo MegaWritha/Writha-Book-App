@@ -1,18 +1,37 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
-  View, Text, ScrollView, StyleSheet, Pressable, RefreshControl,
-  Image, Dimensions, TouchableOpacity, Alert, ActivityIndicator,
+  View, Text, ScrollView, StyleSheet, TouchableOpacity,
+  Image, Dimensions, ActivityIndicator, Animated,
+  RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { auth, db } from "@/lib/firebase";
-import { 
-  collection, query, where, onSnapshot, orderBy 
+import {
+  collection, query, where, onSnapshot, orderBy, doc, getDoc,
 } from "firebase/firestore";
 import { LinearGradient } from "expo-linear-gradient";
 
 const { width } = Dimensions.get("window");
+
+const THEME = {
+  bg: "#0A0612",
+  ui: "#130D1F",
+  ui2: "#1E1535",
+  ui3: "#2A1D47",
+  accent: "#FFD700",
+  accentDim: "rgba(255,215,0,0.1)",
+  purple: "#6D28D9",
+  purpleLight: "#A78BFA",
+  text: "#EDE8F5",
+  textMuted: "#7A6E8A",
+  green: "#22C55E",
+  red: "#EF4444",
+  blue: "#38BDF8",
+};
+
+type TabType = "reading" | "purchased" | "drafts" | "published" | "submissions" | "stats";
 
 interface BookItem {
   id: string;
@@ -22,45 +41,188 @@ interface BookItem {
   coverUrl?: string;
   progress?: number;
   isOffline?: boolean;
-  type?: "book" | "weave" | "research";
-  status?: "draft" | "submitted" | "under_review" | "published" | "rejected" | "library";
+  type?: string;
+  status?: string;
   likesCount?: number;
   views?: number;
   authorId?: string;
   lastRead?: any;
+  price?: number;
+  purchasedAt?: any;
+  genre?: string;
+  description?: string;
+  wordCount?: number;
 }
 
-// Restored Tab Types
-type TabType = "reading" | "drafts" | "published" | "submissions" | "stats";
+const TABS: { id: TabType; icon: string; label: string }[] = [
+  { id: "reading",     icon: "book-open-variant",          label: "Reading"    },
+  { id: "purchased",   icon: "shopping",                   label: "Purchased"  },
+  { id: "drafts",      icon: "file-document-edit-outline", label: "Drafts"     },
+  { id: "published",   icon: "check-decagram",             label: "Live"       },
+  { id: "submissions", icon: "file-clock-outline",         label: "Queue"      },
+  { id: "stats",       icon: "chart-box-outline",          label: "Stats"      },
+];
 
+// ── STATUS CONFIG ─────────────────────────────────────────────────────────
+const STATUS_CONFIG: Record<string, { color: string; label: string }> = {
+  draft:        { color: THEME.textMuted,   label: "DRAFT"         },
+  submitted:    { color: THEME.accent,      label: "IN REVIEW"     },
+  under_review: { color: THEME.purple,      label: "REVIEWING"     },
+  rejected:     { color: THEME.red,         label: "NEEDS CHANGES" },
+  published:    { color: THEME.green,       label: "LIVE"          },
+};
+
+// ── STAT BOX ──────────────────────────────────────────────────────────────
+const StatBox = ({ label, val, color, icon }: any) => (
+  <View style={styles.statTile}>
+    <View style={[styles.statTileIcon, { backgroundColor: color + "20" }]}>
+      <Ionicons name={icon} size={20} color={color} />
+    </View>
+    <Text style={[styles.statTileVal, { color }]}>{val}</Text>
+    <Text style={styles.statTileLabel}>{label}</Text>
+  </View>
+);
+
+// ── BOOK CARD ─────────────────────────────────────────────────────────────
+const BookCard = ({
+  item, tab, onPress,
+}: {
+  item: BookItem; tab: TabType; onPress: () => void;
+}) => {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const statusCfg = STATUS_CONFIG[item.status || ""] || null;
+
+  const handlePressIn = () =>
+    Animated.spring(scaleAnim, { toValue: 0.96, useNativeDriver: true, friction: 8 }).start();
+  const handlePressOut = () =>
+    Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, friction: 8 }).start();
+
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      onPressIn={handlePressIn}
+      onPressOut={handlePressOut}
+      activeOpacity={1}
+    >
+      <Animated.View style={[styles.bookCard, { transform: [{ scale: scaleAnim }] }]}>
+        <View style={styles.coverWrap}>
+          <Image
+            source={{
+              uri: item.coverUrl || item.cover ||
+                "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=400",
+            }}
+            style={styles.coverImg}
+          />
+
+          {/* Progress bar for reading tab */}
+          {tab === "reading" && (
+            <>
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: `${item.progress || 0}%` }]} />
+              </View>
+              <View style={styles.progressLabel}>
+                <Text style={styles.progressLabelTxt}>{item.progress || 0}%</Text>
+              </View>
+            </>
+          )}
+
+          {/* Offline badge */}
+          {item.isOffline && (
+            <View style={styles.offlineBadge}>
+              <Ionicons name="cloud-done" size={12} color={THEME.green} />
+            </View>
+          )}
+
+          {/* Status badge */}
+          {statusCfg && tab !== "reading" && tab !== "purchased" && (
+            <View style={[styles.statusBadge, { backgroundColor: statusCfg.color + "DD" }]}>
+              <Text style={styles.statusBadgeTxt}>{statusCfg.label}</Text>
+            </View>
+          )}
+
+          {/* Price badge for purchased */}
+          {tab === "purchased" && item.price && (
+            <View style={styles.purchasedBadge}>
+              <Ionicons name="checkmark-circle" size={12} color={THEME.green} />
+              <Text style={styles.purchasedBadgeTxt}>OWNED</Text>
+            </View>
+          )}
+        </View>
+
+        <Text style={styles.bookTitle} numberOfLines={1}>
+          {item.title || "Untitled"}
+        </Text>
+        <Text style={styles.bookMeta} numberOfLines={1}>
+          {tab === "reading"
+            ? `${item.progress || 0}% read`
+            : tab === "purchased"
+            ? item.genre || "Book"
+            : `${(item.views || 0).toLocaleString()} reads`}
+        </Text>
+      </Animated.View>
+    </TouchableOpacity>
+  );
+};
+
+// ── MAIN SCREEN ───────────────────────────────────────────────────────────
 export default function LibraryScreen() {
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<TabType>("reading");
   const [readingList, setReadingList] = useState<BookItem[]>([]);
+  const [purchasedList, setPurchasedList] = useState<BookItem[]>([]);
   const [myWorks, setMyWorks] = useState<BookItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const scrollX = useRef(new Animated.Value(0)).current;
 
   const user = auth.currentUser;
 
+  // ── LISTENERS ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
 
-    // BROAD READING LIST TRACKING
+    // ✅ FIX: Reading list — tracks books with progress > 0
     const unsubRead = onSnapshot(
-      query(collection(db, "users", user.uid, "library"), orderBy("lastRead", "desc")),
-      (snap) => {
-        const books = snap.docs.map(d => ({ id: d.id, ...d.data() } as BookItem));
-        setReadingList(books.filter(b => (b.progress && b.progress > 0) || b.isOffline === true));
+      query(
+        collection(db, "users", user.uid, "library"),
+        orderBy("lastRead", "desc")
+      ),
+      async (snap) => {
+        const items = snap.docs.map((d) => ({ id: d.id, ...d.data() } as BookItem));
+
+        // ✅ Fetch full book details for each library entry
+        const enriched = await Promise.allSettled(
+          items.map(async (item) => {
+            try {
+              const bookSnap = await getDoc(doc(db, "books", item.bookId || item.id));
+              if (bookSnap.exists()) {
+                return { ...item, ...bookSnap.data(), id: item.id, bookId: item.bookId || item.id };
+              }
+              return item;
+            } catch { return item; }
+          })
+        );
+
+        const all = enriched
+          .filter((r) => r.status === "fulfilled")
+          .map((r) => (r as any).value as BookItem);
+
+        // Reading = has progress
+        setReadingList(all.filter((b) => (b.progress || 0) > 0));
+
+        // Purchased = paid books (price > 0)
+        setPurchasedList(all.filter((b) => b.price && b.price > 0));
+
         setLoading(false);
-      }
+      },
+      () => setLoading(false)
     );
 
-    // PUBLISHING & SUBMISSION TRACKING (Uses manuscripts collection)
+    // My authored works
     const unsubWorks = onSnapshot(
       query(collection(db, "books"), where("authorId", "==", user.uid)),
       (snap) => {
-        setMyWorks(snap.docs.map(d => ({ id: d.id, ...d.data() } as BookItem)));
+        setMyWorks(snap.docs.map((d) => ({ id: d.id, ...d.data() } as BookItem)));
       }
     );
 
@@ -69,204 +231,416 @@ export default function LibraryScreen() {
 
   const onRefresh = () => {
     setRefreshing(true);
-    setTimeout(() => setRefreshing(false), 1500);
+    setTimeout(() => setRefreshing(false), 1200);
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "draft": return "#6B7280";
-      case "submitted": return "#D4AF37";
-      case "under_review": return "#8E2DE2";
-      case "rejected": return "#EF4444";
-      case "published": return "#10B981";
-      default: return "#6D28D9";
+  const handleBookPress = (item: BookItem) => {
+    if (item.status === "submitted" || item.status === "under_review") {
+      return;
+    }
+    if (item.status === "draft") {
+      router.push({ pathname: "/write/[id]", params: { id: item.id } } as any);
+    } else {
+      router.push({ pathname: "/book/[id]", params: { id: item.bookId || item.id } } as any);
     }
   };
 
-  const renderBook = (item: BookItem) => (
-    <Pressable
-      key={item.id}
-      style={styles.bookCard}
-      onPress={() => {
-        if (item.status === "submitted" || item.status === "under_review") {
-          Alert.alert("Manuscript Locked", "This work is currently being reviewed.");
-        } else if (item.status === "draft") {
-          // Fixed router path for TypeScript
-          router.push({ pathname: "/write", params: { id: item.id } });
-        } else {
-          router.push({ pathname: "/book/[id]", params: { id: item.bookId || item.id } });
-        }
-      }}
-    >
-      <View style={styles.coverWrapper}>
-        <Image
-          source={{ uri: item.coverUrl ||item.cover || "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c" }}
-          style={styles.coverImg}
-        />
+  const drafts      = myWorks.filter((w) => w.status === "draft");
+  const published   = myWorks.filter((w) => w.status === "published");
+  const submissions = myWorks.filter((w) => ["submitted", "under_review", "rejected"].includes(w.status || ""));
 
-        {item.isOffline && (
-          <View style={styles.offlineBadge}>
-            <MaterialCommunityIcons name="check-circle" size={16} color="#4CD964" />
-          </View>
-        )}
+  const getCurrentData = (): BookItem[] => {
+    switch (activeTab) {
+      case "reading":     return readingList;
+      case "purchased":   return purchasedList;
+      case "drafts":      return drafts;
+      case "published":   return published;
+      case "submissions": return submissions;
+      default: return [];
+    }
+  };
 
-        {activeTab === "reading" && (
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${item.progress || 0}%` }]} />
-          </View>
-        )}
+  const totalReads  = myWorks.reduce((a, b) => a + (b.views || 0), 0);
+  const totalLikes  = myWorks.reduce((a, b) => a + (b.likesCount || 0), 0);
 
-        {item.status && activeTab !== "reading" && (
-          <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) }]}>
-            <Text style={styles.statusText}>
-              {item.status === "submitted" ? "AWAITING APPROVAL" : item.status.replace("_", " ").toUpperCase()}
-            </Text>
-          </View>
-        )}
+  if (loading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator color={THEME.accent} size="large" />
+        <Text style={{ color: THEME.textMuted, marginTop: 12 }}>Loading library...</Text>
       </View>
+    );
+  }
 
-      <Text style={styles.bookTitle} numberOfLines={1}>
-        {item.title || "Untitled Manuscript"}
-      </Text>
-
-      <Text style={styles.bookMeta}>
-        {activeTab === "reading" 
-          ? `${item.progress || 0}% Completed` 
-          : `${item.views || 0} Reads • ${item.likesCount || 0} Likes`}
-      </Text>
-    </Pressable>
-  );
-
-  // Broad Filtering Logic
-  const drafts = myWorks.filter(w => w.status === "draft");
-  const published = myWorks.filter(w => w.status === "published");
-  const submissions = myWorks.filter(w => ["submitted", "under_review", "rejected"].includes(w.status as string));
-
-  const currentData = 
-    activeTab === "reading" ? readingList : 
-    activeTab === "drafts" ? drafts :
-    activeTab === "published" ? published : 
-    activeTab === "submissions" ? submissions : [];
-
-  if (loading) return <View style={styles.centered}><ActivityIndicator color="#D4AF37" /></View>;
-
+  // ── RENDER ────────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
-      <LinearGradient colors={["#080212", "#05010A"]} style={StyleSheet.absoluteFill} />
+      <LinearGradient
+        colors={["#0D0818", "#0A0612"]}
+        style={StyleSheet.absoluteFill}
+      />
 
-      <View style={[styles.header, { paddingTop: insets.top + 20 }]}>
-        <Text style={styles.libraryTitle}>WRITHA LIBRARY</Text>
-        <Text style={styles.subTitle}>Creative Command & Submission Tracker</Text>
+      {/* HEADER */}
+      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
+        <View>
+          <Text style={styles.headerSmall}>WRITHA</Text>
+          <Text style={styles.headerTitle}>My Library</Text>
+        </View>
+        <TouchableOpacity
+          style={styles.writeBtn}
+          onPress={() => router.push("/write" as any)}
+        >
+          <MaterialCommunityIcons name="pencil-plus" size={18} color="#000" />
+          <Text style={styles.writeBtnTxt}>Write</Text>
+        </TouchableOpacity>
       </View>
 
-      <View style={styles.tabBar}>
-        {[
-          { id: "reading", icon: "book-open-variant", label: "Reading" },
-          { id: "drafts", icon: "file-document-edit-outline", label: "Drafts" },
-          { id: "published", icon: "check-decagram", label: "Live" },
-          { id: "submissions", icon: "file-clock-outline", label: "Queue" },
-          { id: "stats", icon: "chart-box-outline", label: "Stats" },
-        ].map((tab) => (
-          <TouchableOpacity
-            key={tab.id}
-            onPress={() => setActiveTab(tab.id as TabType)}
-            style={[styles.tabItem, activeTab === tab.id && styles.activeTab]}
-          >
-            <MaterialCommunityIcons
-              name={tab.icon as any}
-              size={22}
-              color={activeTab === tab.id ? "#000" : "#D4AF37"}
-            />
-            <Text style={[styles.tabLabel, activeTab === tab.id && styles.activeTabLabel]}>
-              {tab.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
+      {/* QUICK STATS ROW */}
+      <View style={styles.quickStatsRow}>
+        <View style={styles.quickStat}>
+          <Text style={styles.quickStatVal}>{readingList.length}</Text>
+          <Text style={styles.quickStatLbl}>Reading</Text>
+        </View>
+        <View style={styles.quickStatDivider} />
+        <View style={styles.quickStat}>
+          <Text style={styles.quickStatVal}>{purchasedList.length}</Text>
+          <Text style={styles.quickStatLbl}>Purchased</Text>
+        </View>
+        <View style={styles.quickStatDivider} />
+        <View style={styles.quickStat}>
+          <Text style={styles.quickStatVal}>{published.length}</Text>
+          <Text style={styles.quickStatLbl}>Published</Text>
+        </View>
+        <View style={styles.quickStatDivider} />
+        <View style={styles.quickStat}>
+          <Text style={[styles.quickStatVal, { color: THEME.accent }]}>
+            {totalReads.toLocaleString()}
+          </Text>
+          <Text style={styles.quickStatLbl}>Total Reads</Text>
+        </View>
       </View>
 
+      {/* TAB BAR */}
       <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#D4AF37" />}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.tabScroll}
+        contentContainerStyle={styles.tabScrollContent}
       >
-        {activeTab === "stats" ? (
-          <View style={styles.statsPanel}>
-            <Text style={styles.panelTitle}>AUTHOR PERFORMANCE</Text>
-            <View style={styles.mainStatCard}>
-               <Text style={styles.mainStatVal}>{myWorks.reduce((acc, b) => acc + (b.views || 0), 0)}</Text>
-               <Text style={styles.mainStatLabel}>TOTAL PORTFOLIO READS</Text>
-            </View>
+        {TABS.map((tab) => {
+          const isActive = activeTab === tab.id;
+          // Badge count
+          const badgeCount =
+            tab.id === "reading"     ? readingList.length :
+            tab.id === "purchased"   ? purchasedList.length :
+            tab.id === "drafts"      ? drafts.length :
+            tab.id === "published"   ? published.length :
+            tab.id === "submissions" ? submissions.length : 0;
 
-            <View style={styles.statsGrid}>
-               <StatBox label="APPROVED" val={published.length} color="#10B981" />
-               <StatBox label="DRAFTS" val={drafts.length} color="#6B7280" />
-               <StatBox label="IN QUEUE" val={submissions.length} color="#D4AF37" />
-               <StatBox label="LIKES" val={myWorks.reduce((acc, b) => acc + (b.likesCount || 0), 0)} color="#EF4444" />
-            </View>
-          </View>
-        ) : (
-          <View style={styles.bookGrid}>
-            {currentData.length > 0 ? (
-              currentData.map(renderBook)
-            ) : (
-              <View style={styles.emptyBox}>
-                <Ionicons name="book-outline" size={50} color="#1A0B2E" />
-                <Text style={styles.emptyText}>No items found in this category.</Text>
-              </View>
-            )}
-          </View>
-        )}
+          return (
+            <TouchableOpacity
+              key={tab.id}
+              style={[styles.tabItem, isActive && styles.tabItemActive]}
+              onPress={() => setActiveTab(tab.id)}
+            >
+              <MaterialCommunityIcons
+                name={tab.icon as any}
+                size={16}
+                color={isActive ? "#000" : THEME.textMuted}
+              />
+              <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
+                {tab.label}
+              </Text>
+              {badgeCount > 0 && (
+                <View style={[styles.tabBadge, isActive && styles.tabBadgeActive]}>
+                  <Text style={[styles.tabBadgeTxt, isActive && { color: THEME.accent }]}>
+                    {badgeCount}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          );
+        })}
       </ScrollView>
 
-      <TouchableOpacity style={styles.fab} onPress={() => router.push("/write")}>
-        <LinearGradient colors={["#D4AF37", "#B8860B"]} style={styles.fabGradient}>
-          <Ionicons name="add" size={32} color="#000" />
-        </LinearGradient>
-      </TouchableOpacity>
+      {/* MAIN CONTENT */}
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={THEME.accent} />
+        }
+      >
+        {/* STATS TAB */}
+        {activeTab === "stats" ? (
+          <View style={styles.statsSection}>
+            <View style={styles.mainStatCard}>
+              <LinearGradient
+                colors={["#2D1B4D", "#1E1135"]}
+                style={styles.mainStatGradient}
+              >
+                <Text style={styles.mainStatVal}>{totalReads.toLocaleString()}</Text>
+                <Text style={styles.mainStatLabel}>TOTAL PORTFOLIO READS</Text>
+                <View style={styles.mainStatDivider} />
+                <View style={styles.mainStatRow}>
+                  <View style={styles.mainStatItem}>
+                    <Text style={styles.mainStatItemVal}>{totalLikes}</Text>
+                    <Text style={styles.mainStatItemLbl}>LIKES</Text>
+                  </View>
+                  <View style={styles.mainStatItem}>
+                    <Text style={styles.mainStatItemVal}>{myWorks.length}</Text>
+                    <Text style={styles.mainStatItemLbl}>WORKS</Text>
+                  </View>
+                  <View style={styles.mainStatItem}>
+                    <Text style={styles.mainStatItemVal}>{published.length}</Text>
+                    <Text style={styles.mainStatItemLbl}>PUBLISHED</Text>
+                  </View>
+                </View>
+              </LinearGradient>
+            </View>
+
+            <Text style={styles.statsSectionTitle}>BREAKDOWN</Text>
+            <View style={styles.statsGrid}>
+              <StatBox label="PUBLISHED"  val={published.length}   color={THEME.green}       icon="checkmark-circle" />
+              <StatBox label="DRAFTS"     val={drafts.length}      color={THEME.textMuted}   icon="document-text"    />
+              <StatBox label="IN QUEUE"   val={submissions.length} color={THEME.accent}      icon="time"             />
+              <StatBox label="PURCHASED"  val={purchasedList.length} color={THEME.blue}      icon="cart"             />
+            </View>
+
+            {/* Per-book performance */}
+            {published.length > 0 && (
+              <>
+                <Text style={styles.statsSectionTitle}>BOOK PERFORMANCE</Text>
+                {published.map((book) => (
+                  <View key={book.id} style={styles.perfCard}>
+                    <Image
+                      source={{ uri: book.coverUrl || book.cover || "https://picsum.photos/60/80" }}
+                      style={styles.perfCover}
+                    />
+                    <View style={{ flex: 1, marginLeft: 14 }}>
+                      <Text style={styles.perfTitle} numberOfLines={1}>{book.title}</Text>
+                      <View style={styles.perfStats}>
+                        <View style={styles.perfStat}>
+                          <Ionicons name="eye-outline" size={12} color={THEME.textMuted} />
+                          <Text style={styles.perfStatTxt}>{(book.views || 0).toLocaleString()}</Text>
+                        </View>
+                        <View style={styles.perfStat}>
+                          <Ionicons name="heart-outline" size={12} color={THEME.textMuted} />
+                          <Text style={styles.perfStatTxt}>{book.likesCount || 0}</Text>
+                        </View>
+                      </View>
+                      {/* Read ratio bar */}
+                      <View style={styles.perfBar}>
+                        <View style={[styles.perfBarFill, {
+                          width: `${Math.min(100, ((book.views || 0) / Math.max(1, totalReads)) * 100)}%`,
+                        }]} />
+                      </View>
+                    </View>
+                  </View>
+                ))}
+              </>
+            )}
+          </View>
+        ) : (
+          <>
+            {/* EMPTY STATES */}
+            {getCurrentData().length === 0 ? (
+              <View style={styles.emptyState}>
+                <View style={styles.emptyIconCircle}>
+                  <MaterialCommunityIcons
+                    name={TABS.find((t) => t.id === activeTab)?.icon as any}
+                    size={36}
+                    color={THEME.textMuted}
+                  />
+                </View>
+                <Text style={styles.emptyTitle}>
+                  {activeTab === "reading"     ? "No books in progress"     :
+                   activeTab === "purchased"   ? "No purchased books yet"   :
+                   activeTab === "drafts"      ? "No drafts yet"            :
+                   activeTab === "published"   ? "Nothing published yet"    :
+                                                 "No pending submissions"   }
+                </Text>
+                <Text style={styles.emptySub}>
+                  {activeTab === "reading"
+                    ? "Start reading a book and it'll appear here automatically"
+                    : activeTab === "purchased"
+                    ? "Purchase paid books and find them all here"
+                    : "Head to the studio to start writing"}
+                </Text>
+                {(activeTab === "drafts" || activeTab === "published") && (
+                  <TouchableOpacity
+                    style={styles.emptyActionBtn}
+                    onPress={() => router.push("/write" as any)}
+                  >
+                    <MaterialCommunityIcons name="pencil-plus" size={16} color="#000" />
+                    <Text style={styles.emptyActionBtnTxt}>Open Studio</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            ) : (
+              <>
+                {/* READING — show continue reading banner for most recent */}
+                {activeTab === "reading" && readingList[0] && (
+                  <TouchableOpacity
+                    style={styles.continueBanner}
+                    onPress={() => router.push(`/book/${readingList[0].bookId || readingList[0].id}` as any)}
+                    activeOpacity={0.9}
+                  >
+                    <Image
+                      source={{ uri: readingList[0].coverUrl || readingList[0].cover || "https://picsum.photos/400/200" }}
+                      style={styles.continueBannerImg}
+                    />
+                    <LinearGradient
+                      colors={["transparent", "rgba(10,6,18,0.95)"]}
+                      style={styles.continueBannerGrad}
+                    >
+                      <Text style={styles.continueBannerSmall}>CONTINUE READING</Text>
+                      <Text style={styles.continueBannerTitle} numberOfLines={1}>
+                        {readingList[0].title}
+                      </Text>
+                      <View style={styles.continueBannerProgress}>
+                        <View style={styles.continueBannerProgressTrack}>
+                          <View style={[styles.continueBannerProgressFill, {
+                            width: `${readingList[0].progress || 0}%`,
+                          }]} />
+                        </View>
+                        <Text style={styles.continueBannerProgressTxt}>
+                          {readingList[0].progress || 0}% complete
+                        </Text>
+                      </View>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                )}
+
+                {/* SUBMISSIONS — status info box */}
+                {activeTab === "submissions" && (
+                  <View style={styles.reviewInfoBox}>
+                    <Ionicons name="shield-checkmark-outline" size={16} color={THEME.accent} />
+                    <Text style={styles.reviewInfoTxt}>
+                      Works in queue are reviewed within 24–48 hours. You'll be notified on approval or if changes are needed.
+                    </Text>
+                  </View>
+                )}
+
+                {/* BOOK GRID */}
+                <View style={styles.bookGrid}>
+                  {getCurrentData().map((item) => (
+                    <BookCard
+                      key={item.id}
+                      item={item}
+                      tab={activeTab}
+                      onPress={() => handleBookPress(item)}
+                    />
+                  ))}
+                </View>
+              </>
+            )}
+          </>
+        )}
+
+        <View style={{ height: 120 }} />
+      </ScrollView>
     </View>
   );
 }
 
-const StatBox = ({ label, val, color }: any) => (
-  <View style={styles.statTile}>
-    <Text style={[styles.statTileVal, { color }]}>{val}</Text>
-    <Text style={styles.statTileLabel}>{label}</Text>
-  </View>
-);
+const CARD_WIDTH = (width - 52) / 2;
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#05010A" },
-  centered: { flex: 1, backgroundColor: "#05010A", justifyContent: 'center', alignItems: 'center' },
-  header: { paddingHorizontal: 25, marginBottom: 20 },
-  libraryTitle: { color: "#FFF", fontSize: 30, fontWeight: "900", letterSpacing: -1 },
-  subTitle: { color: "#D4AF37", fontSize: 11, fontWeight: "700", marginTop: 4, opacity: 0.8 },
-  tabBar: { flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 20, marginBottom: 25 },
-  tabItem: { flex: 1, paddingVertical: 12, alignItems: "center", backgroundColor: "#12081F", marginHorizontal: 4, borderRadius: 18, borderWidth: 1, borderColor: "rgba(212,175,55,0.1)" },
-  activeTab: { backgroundColor: "#D4AF37", borderColor: "#D4AF37" },
-  tabLabel: { fontSize: 8, marginTop: 4, color: "#D4AF37", fontWeight: "800" },
-  activeTabLabel: { color: "#000" },
-  scrollContent: { paddingHorizontal: 20, paddingBottom: 150 },
-  bookGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
-  bookCard: { width: (width - 60) / 2, marginBottom: 25 },
-  coverWrapper: { width: "100%", height: 250, borderRadius: 24, overflow: "hidden", backgroundColor: "#12081F" },
+  container: { flex: 1, backgroundColor: THEME.bg },
+  centered: { flex: 1, backgroundColor: THEME.bg, justifyContent: "center", alignItems: "center" },
+
+  // Header
+  header: { paddingHorizontal: 20, paddingBottom: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
+  headerSmall: { color: THEME.accent, fontSize: 10, fontWeight: "900", letterSpacing: 4 },
+  headerTitle: { color: THEME.text, fontSize: 28, fontWeight: "900", marginTop: 4 },
+  writeBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accent, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 14 },
+  writeBtnTxt: { color: "#000", fontWeight: "900", fontSize: 13 },
+
+  // Quick stats
+  quickStatsRow: { flexDirection: "row", marginHorizontal: 16, backgroundColor: THEME.ui, borderRadius: 18, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: THEME.ui2 },
+  quickStat: { flex: 1, alignItems: "center" },
+  quickStatVal: { color: THEME.text, fontSize: 18, fontWeight: "900" },
+  quickStatLbl: { color: THEME.textMuted, fontSize: 9, fontWeight: "700", marginTop: 3, letterSpacing: 0.5 },
+  quickStatDivider: { width: 1, backgroundColor: THEME.ui2 },
+
+  // Tabs
+  tabScroll: { maxHeight: 60 },
+  tabScrollContent: { paddingHorizontal: 16, gap: 8, paddingBottom: 8 },
+  tabItem: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.ui2 },
+  tabItemActive: { backgroundColor: THEME.accent, borderColor: THEME.accent },
+  tabLabel: { color: THEME.textMuted, fontSize: 11, fontWeight: "800" },
+  tabLabelActive: { color: "#000" },
+  tabBadge: { backgroundColor: THEME.ui2, borderRadius: 8, paddingHorizontal: 5, paddingVertical: 1 },
+  tabBadgeActive: { backgroundColor: "rgba(0,0,0,0.2)" },
+  tabBadgeTxt: { color: THEME.textMuted, fontSize: 9, fontWeight: "900" },
+
+  // Scroll content
+  scrollContent: { paddingHorizontal: 16, paddingTop: 16 },
+
+  // Continue reading banner
+  continueBanner: { height: 160, borderRadius: 20, overflow: "hidden", marginBottom: 20, borderWidth: 1, borderColor: THEME.ui2 },
+  continueBannerImg: { ...StyleSheet.absoluteFillObject },
+  continueBannerGrad: { ...StyleSheet.absoluteFillObject, justifyContent: "flex-end", padding: 16 },
+  continueBannerSmall: { color: THEME.accent, fontSize: 9, fontWeight: "900", letterSpacing: 2 },
+  continueBannerTitle: { color: THEME.text, fontSize: 18, fontWeight: "900", marginTop: 4 },
+  continueBannerProgress: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 10 },
+  continueBannerProgressTrack: { flex: 1, height: 4, backgroundColor: "rgba(255,255,255,0.2)", borderRadius: 2 },
+  continueBannerProgressFill: { height: "100%", backgroundColor: THEME.accent, borderRadius: 2 },
+  continueBannerProgressTxt: { color: THEME.accent, fontSize: 10, fontWeight: "800" },
+
+  // Review info
+  reviewInfoBox: { flexDirection: "row", gap: 10, backgroundColor: THEME.accentDim, borderRadius: 14, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: THEME.accent + "30", alignItems: "flex-start" },
+  reviewInfoTxt: { color: THEME.textMuted, fontSize: 12, flex: 1, lineHeight: 18 },
+
+  // Book grid
+  bookGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  bookCard: { width: CARD_WIDTH },
+  coverWrap: { width: "100%", height: CARD_WIDTH * 1.45, borderRadius: 18, overflow: "hidden", backgroundColor: THEME.ui },
   coverImg: { width: "100%", height: "100%" },
-  offlineBadge: { position: "absolute", top: 12, right: 12, backgroundColor: "rgba(0,0,0,0.7)", padding: 6, borderRadius: 10 },
-  progressTrack: { position: "absolute", bottom: 0, width: "100%", height: 5, backgroundColor: "rgba(255,255,255,0.1)" },
-  progressFill: { height: "100%", backgroundColor: "#D4AF37" },
-  statusBadge: { position: "absolute", bottom: 15, left: 10, right: 10, paddingVertical: 6, borderRadius: 12, alignItems: 'center' },
-  statusText: { color: "#FFF", fontSize: 8, fontWeight: "900" },
-  bookTitle: { color: "#FFF", fontWeight: "800", marginTop: 12, fontSize: 15 },
-  bookMeta: { color: "#665B73", fontSize: 11, fontWeight: "600", marginTop: 2 },
-  emptyBox: { width: "100%", marginTop: 100, alignItems: "center", opacity: 0.5 },
-  emptyText: { color: "#665B73", fontWeight: "700", marginTop: 15 },
-  statsPanel: { gap: 20 },
-  panelTitle: { color: "#D4AF37", fontSize: 10, fontWeight: "900", letterSpacing: 2 },
-  mainStatCard: { backgroundColor: "#12081F", padding: 35, borderRadius: 32, alignItems: 'center', borderWidth: 1, borderColor: "rgba(212,175,55,0.1)" },
-  mainStatVal: { color: "#FFF", fontSize: 48, fontWeight: "900" },
-  mainStatLabel: { color: "#D4AF37", fontSize: 10, fontWeight: "800", marginTop: 5 },
-  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 15 },
-  statTile: { width: (width - 55) / 2, backgroundColor: "#12081F", padding: 22, borderRadius: 28, alignItems: 'center' },
-  statTileVal: { fontSize: 24, fontWeight: "900" },
-  statTileLabel: { color: "#665B73", fontSize: 9, fontWeight: "800", marginTop: 4 },
-  fab: { position: "absolute", bottom: 40, right: 25, width: 70, height: 70, borderRadius: 24, overflow: 'hidden', elevation: 10 },
-  fabGradient: { flex: 1, justifyContent: "center", alignItems: "center" }
+  progressTrack: { position: "absolute", bottom: 0, width: "100%", height: 4, backgroundColor: "rgba(0,0,0,0.4)" },
+  progressFill: { height: "100%", backgroundColor: THEME.accent },
+  progressLabel: { position: "absolute", bottom: 10, right: 10, backgroundColor: "rgba(0,0,0,0.7)", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8 },
+  progressLabelTxt: { color: THEME.accent, fontSize: 9, fontWeight: "900" },
+  offlineBadge: { position: "absolute", top: 10, right: 10, backgroundColor: "rgba(0,0,0,0.7)", padding: 5, borderRadius: 8 },
+  statusBadge: { position: "absolute", bottom: 10, left: 8, right: 8, paddingVertical: 5, borderRadius: 10, alignItems: "center" },
+  statusBadgeTxt: { color: "#FFF", fontSize: 8, fontWeight: "900", letterSpacing: 1 },
+  purchasedBadge: { position: "absolute", top: 10, left: 10, flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: "rgba(0,0,0,0.7)", paddingHorizontal: 7, paddingVertical: 3, borderRadius: 8 },
+  purchasedBadgeTxt: { color: THEME.green, fontSize: 8, fontWeight: "900" },
+  bookTitle: { color: THEME.text, fontWeight: "800", fontSize: 13, marginTop: 10 },
+  bookMeta: { color: THEME.textMuted, fontSize: 11, marginTop: 3 },
+
+  // Empty state
+  emptyState: { paddingVertical: 60, alignItems: "center" },
+  emptyIconCircle: { width: 80, height: 80, borderRadius: 24, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center", marginBottom: 16, borderWidth: 1, borderColor: THEME.ui2 },
+  emptyTitle: { color: THEME.text, fontSize: 18, fontWeight: "800" },
+  emptySub: { color: THEME.textMuted, fontSize: 13, marginTop: 8, textAlign: "center", lineHeight: 20, paddingHorizontal: 24 },
+  emptyActionBtn: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: THEME.accent, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 14, marginTop: 20 },
+  emptyActionBtnTxt: { color: "#000", fontWeight: "900", fontSize: 13 },
+
+  // Stats
+  statsSection: { gap: 16 },
+  mainStatCard: { borderRadius: 24, overflow: "hidden", borderWidth: 1, borderColor: THEME.ui2 },
+  mainStatGradient: { padding: 28, alignItems: "center" },
+  mainStatVal: { color: THEME.text, fontSize: 52, fontWeight: "900" },
+  mainStatLabel: { color: THEME.accent, fontSize: 10, fontWeight: "900", letterSpacing: 2, marginTop: 4 },
+  mainStatDivider: { height: 1, backgroundColor: THEME.ui2, width: "100%", marginVertical: 20 },
+  mainStatRow: { flexDirection: "row", width: "100%" },
+  mainStatItem: { flex: 1, alignItems: "center" },
+  mainStatItemVal: { color: THEME.text, fontSize: 22, fontWeight: "900" },
+  mainStatItemLbl: { color: THEME.textMuted, fontSize: 9, fontWeight: "800", marginTop: 4, letterSpacing: 1 },
+  statsSectionTitle: { color: THEME.accent, fontSize: 10, fontWeight: "900", letterSpacing: 2 },
+  statsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  statTile: { width: (width - 44) / 2, backgroundColor: THEME.ui, borderRadius: 20, padding: 20, alignItems: "center", borderWidth: 1, borderColor: THEME.ui2 },
+  statTileIcon: { width: 44, height: 44, borderRadius: 14, justifyContent: "center", alignItems: "center", marginBottom: 10 },
+  statTileVal: { fontSize: 28, fontWeight: "900" },
+  statTileLabel: { color: THEME.textMuted, fontSize: 9, fontWeight: "800", marginTop: 4, letterSpacing: 1 },
+  perfCard: { flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui, borderRadius: 16, padding: 14, borderWidth: 1, borderColor: THEME.ui2 },
+  perfCover: { width: 44, height: 60, borderRadius: 8 },
+  perfTitle: { color: THEME.text, fontWeight: "800", fontSize: 13 },
+  perfStats: { flexDirection: "row", gap: 12, marginTop: 6 },
+  perfStat: { flexDirection: "row", alignItems: "center", gap: 4 },
+  perfStatTxt: { color: THEME.textMuted, fontSize: 11 },
+  perfBar: { height: 3, backgroundColor: THEME.ui2, borderRadius: 2, marginTop: 8, overflow: "hidden" },
+  perfBarFill: { height: "100%", backgroundColor: THEME.accent, borderRadius: 2 },
 });

@@ -56,7 +56,7 @@ const SectionHeader = ({
   </View>
 );
 
-// ── EMPTY STATE ───────────────────────────────────────────────────────────
+// ── EMPTY CARD ────────────────────────────────────────────────────────────
 const EmptyCard = ({ emoji, text }: { emoji: string; text: string }) => (
   <View style={styles.emptyCard}>
     <Text style={{ fontSize: 28 }}>{emoji}</Text>
@@ -74,7 +74,8 @@ export default function HomeScreen() {
   const [books, setBooks] = useState<any[]>([]);
   const [weaves, setWeaves] = useState<any[]>([]);
   const [groups, setGroups] = useState<any[]>([]);
-  const [discussions, setDiscussions] = useState<any[]>([]);
+  // ✅ FIX: Separate feed into discussions and articles
+  const [feedItems, setFeedItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Search
@@ -90,6 +91,16 @@ export default function HomeScreen() {
   const [newPost, setNewPost] = useState("");
   const [posting, setPosting] = useState(false);
   const [publishToWeb, setPublishToWeb] = useState(false);
+
+  // ✅ Split feed into discussions and articles by type
+  const discussions = useMemo(
+    () => feedItems.filter((f) => f.type === "discussion" || !f.type),
+    [feedItems]
+  );
+  const articles = useMemo(
+    () => feedItems.filter((f) => f.type === "article"),
+    [feedItems]
+  );
 
   const groupedBooks = useMemo(() => {
     const map: Record<string, any[]> = {};
@@ -128,10 +139,11 @@ export default function HomeScreen() {
       (snap) => setGroups(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
     );
 
+    // ✅ FIX: Fetch all feed items (discussions + articles)
     const unsubFeed = onSnapshot(
-      query(collection(db, "feed"), orderBy("createdAt", "desc"), limit(15)),
+      query(collection(db, "feed"), orderBy("createdAt", "desc"), limit(20)),
       (snap) => {
-        setDiscussions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setFeedItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
         setLoading(false);
       },
       () => setLoading(false)
@@ -155,9 +167,8 @@ export default function HomeScreen() {
   const toggleLike = async (col: string, id: string, likedBy: string[] = []) => {
     if (!user) return;
     const isLiked = likedBy.includes(user.uid);
-    const ref = doc(db, col, id);
     try {
-      await updateDoc(ref, {
+      await updateDoc(doc(db, col, id), {
         likesCount: increment(isLiked ? -1 : 1),
         likedBy: isLiked ? arrayRemove(user.uid) : arrayUnion(user.uid),
       });
@@ -196,43 +207,74 @@ export default function HomeScreen() {
     const results = [
       ...books.filter((b) => b.title?.toLowerCase().includes(q) || b.genre?.toLowerCase().includes(q)).map((b) => ({ ...b, _type: "book" })),
       ...weaves.filter((w) => w.title?.toLowerCase().includes(q)).map((w) => ({ ...w, _type: "weave" })),
-      ...discussions.filter((d) => d.content?.toLowerCase().includes(q)).map((d) => ({ ...d, _type: "discussion" })),
+      ...feedItems.filter((d) => d.content?.toLowerCase().includes(q) || d.title?.toLowerCase().includes(q)).map((d) => ({ ...d, _type: d.type || "discussion" })),
     ];
     setSearchResults(results);
     Keyboard.dismiss();
   };
 
-  // ── SUB COMPONENTS ─────────────────────────────────────────────────────
-
+  // ── BOOK CARD ─────────────────────────────────────────────────────────
   const BookCard = ({ item }: { item: any }) => {
     const isLiked = item.likedBy?.includes(user?.uid);
+    const isPaid = item.price > 0;
+
+    // ✅ FIX: Paid books go to checkout, free books open directly
+    const handleBookPress = () => {
+      if (isPaid) {
+        router.push(`/checkout?id=${item.id}&type=book` as any);
+      } else {
+        router.push(`/book/${item.id}` as any);
+      }
+    };
+
     return (
       <View style={styles.bookCard}>
-        <TouchableOpacity onPress={() => router.push(`/book/${item.id}` as any)} activeOpacity={0.85}>
+        <TouchableOpacity onPress={handleBookPress} activeOpacity={0.85}>
           <View style={styles.bookCoverFrame}>
             <Image
               source={{ uri: item.coverUrl || item.cover || "https://picsum.photos/200/300" }}
               style={styles.bookCover}
             />
-            <View style={styles.pricePill}>
-              <Text style={styles.priceText}>{item.price > 0 ? `₦${item.price}` : "FREE"}</Text>
+            <View style={[styles.pricePill, isPaid && styles.pricePillPaid]}>
+              <Text style={styles.priceText}>{isPaid ? `₦${item.price}` : "FREE"}</Text>
             </View>
+            {/* ✅ PREVIEW BADGE for paid books */}
+            {isPaid && (
+              <View style={styles.previewBadge}>
+                <Ionicons name="eye-outline" size={10} color="#fff" />
+                <Text style={styles.previewBadgeTxt}>PREVIEW</Text>
+              </View>
+            )}
           </View>
           <Text style={styles.bookTitle} numberOfLines={1}>{item.title}</Text>
           <Text style={styles.bookAuthor} numberOfLines={1}>{item.authorName || "Writha Author"}</Text>
         </TouchableOpacity>
         <View style={styles.bookActions}>
-          <TouchableOpacity style={styles.bookActionBtn} onPress={() => toggleLike("books", item.id, item.likedBy)}>
+          {/* Like */}
+          <TouchableOpacity
+            style={styles.bookActionBtn}
+            onPress={() => toggleLike("books", item.id, item.likedBy)}
+          >
             <Ionicons name={isLiked ? "heart" : "heart-outline"} size={15} color={isLiked ? THEME.red : THEME.purpleLight} />
             <Text style={styles.bookActionTxt}>{item.likesCount || 0}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.bookActionBtn} onPress={() => router.push(`/book/${item.id}` as any)}>
+
+          {/* ✅ FIX: Comments now go to book comments, not book detail */}
+          <TouchableOpacity
+            style={styles.bookActionBtn}
+            onPress={() => router.push(`/book/${item.id}/comments` as any)}
+          >
             <Ionicons name="chatbubble-outline" size={14} color={THEME.purpleLight} />
             <Text style={styles.bookActionTxt}>{item.commentsCount || 0}</Text>
           </TouchableOpacity>
+
+          {/* Weave */}
           <TouchableOpacity
             style={[styles.bookActionBtn, styles.weaveActionBtn]}
-            onPress={() => router.push({ pathname: "/weave/create", params: { bookId: item.id, bookTitle: item.title } } as any)}
+            onPress={() => router.push({
+              pathname: "/weave/create",
+              params: { bookId: item.id, bookTitle: item.title },
+            } as any)}
           >
             <MaterialCommunityIcons name="feather" size={13} color="#000" />
             <Text style={styles.weaveActionTxt}>Weave</Text>
@@ -242,6 +284,7 @@ export default function HomeScreen() {
     );
   };
 
+  // ── WEAVE CARD ────────────────────────────────────────────────────────
   const WeaveCard = ({ item }: { item: any }) => (
     <TouchableOpacity
       style={styles.weaveCard}
@@ -262,17 +305,27 @@ export default function HomeScreen() {
     </TouchableOpacity>
   );
 
-  const DiscussionCard = ({ item }: { item: any }) => {
+  // ── DISCUSSION / ARTICLE CARD ─────────────────────────────────────────
+  const FeedCard = ({ item }: { item: any }) => {
     const isLiked = item.likedBy?.includes(user?.uid);
+    const isArticle = item.type === "article";
+
     return (
-      <View style={styles.discCard}>
-        <TouchableOpacity onPress={() => router.push(`/discussion/${item.id}/comments` as any)}>
+      <View style={[styles.discCard, isArticle && styles.articleCard]}>
+        <TouchableOpacity
+          onPress={() => router.push(`/discussion/${item.id}/comments` as any)}
+          activeOpacity={0.85}
+        >
+          {/* Article has a cover image */}
+          {isArticle && item.coverUrl && (
+            <Image source={{ uri: item.coverUrl }} style={styles.articleCover} />
+          )}
           <View style={styles.discHeader}>
             {item.userPhoto ? (
               <Image source={{ uri: item.userPhoto }} style={styles.discAvatar} />
             ) : (
               <View style={[styles.discAvatar, styles.discAvatarFallback]}>
-                <Text style={{ color: THEME.accent, fontWeight: "900", fontSize: 12 }}>
+                <Text style={{ color: THEME.accent, fontWeight: "900", fontSize: 11 }}>
                   {(item.userName || "W")[0].toUpperCase()}
                 </Text>
               </View>
@@ -285,11 +338,28 @@ export default function HomeScreen() {
                   : ""}
               </Text>
             </View>
+            {/* Article badge */}
+            {isArticle && (
+              <View style={styles.articleBadge}>
+                <Text style={styles.articleBadgeTxt}>ARTICLE</Text>
+              </View>
+            )}
           </View>
-          <Text style={styles.discContent} numberOfLines={4}>{item.content}</Text>
+
+          {/* Article has a title */}
+          {isArticle && item.title && (
+            <Text style={styles.articleTitle} numberOfLines={2}>{item.title}</Text>
+          )}
+          <Text style={styles.discContent} numberOfLines={isArticle ? 2 : 4}>
+            {item.content}
+          </Text>
         </TouchableOpacity>
+
         <View style={styles.discActions}>
-          <TouchableOpacity style={styles.discActionBtn} onPress={() => toggleLike("feed", item.id, item.likedBy)}>
+          <TouchableOpacity
+            style={styles.discActionBtn}
+            onPress={() => toggleLike("feed", item.id, item.likedBy)}
+          >
             <Ionicons name={isLiked ? "heart" : "heart-outline"} size={14} color={isLiked ? THEME.red : THEME.purpleLight} />
             <Text style={styles.discActionTxt}>{item.likesCount || 0}</Text>
           </TouchableOpacity>
@@ -302,7 +372,7 @@ export default function HomeScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.discActionBtn}
-            onPress={() => Share.share({ message: `"${item.content}" — Writha` })}
+            onPress={() => Share.share({ message: `${item.title || item.content} — Writha` })}
           >
             <Ionicons name="share-social-outline" size={13} color={THEME.accent} />
           </TouchableOpacity>
@@ -311,6 +381,7 @@ export default function HomeScreen() {
     );
   };
 
+  // ── GROUP CARD ─────────────────────────────────────────────────────────
   const GroupCard = ({ item }: { item: any }) => (
     <TouchableOpacity
       style={styles.groupCard}
@@ -334,7 +405,7 @@ export default function HomeScreen() {
     </TouchableOpacity>
   );
 
-  // ── LOADING ─────────────────────────────────────────────────────────────
+  // ── LOADING ───────────────────────────────────────────────────────────
   if (loading) {
     return (
       <View style={styles.loader}>
@@ -344,7 +415,7 @@ export default function HomeScreen() {
     );
   }
 
-  // ── RENDER ───────────────────────────────────────────────────────────────
+  // ── RENDER ────────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
@@ -400,12 +471,15 @@ export default function HomeScreen() {
         {searchResults ? (
           <View style={styles.section}>
             <SectionHeader title={`${searchResults.length} Results`} subtitle={`for "${searchQuery}"`} />
-            <TouchableOpacity style={styles.clearSearchBtn} onPress={() => { setSearchResults(null); setSearchQuery(""); }}>
+            <TouchableOpacity
+              style={styles.clearSearchBtn}
+              onPress={() => { setSearchResults(null); setSearchQuery(""); }}
+            >
               <Ionicons name="arrow-back" size={14} color={THEME.accent} />
               <Text style={styles.clearSearchTxt}>Back to Feed</Text>
             </TouchableOpacity>
             {searchResults.length === 0 ? (
-              <EmptyCard emoji="🔍" text="No results found. Try different keywords." />
+              <EmptyCard emoji="🔍" text="No results found." />
             ) : (
               <FlatList
                 horizontal
@@ -418,10 +492,10 @@ export default function HomeScreen() {
                   return (
                     <TouchableOpacity
                       style={styles.searchResultCard}
-                      onPress={() => router.push(`/${item._type === "weave" ? "weave" : "discussion"}/${item.id}${item._type === "discussion" ? "/comments" : ""}` as any)}
+                      onPress={() => router.push(`/discussion/${item.id}/comments` as any)}
                     >
                       <View style={styles.searchResultTypeBadge}>
-                        <Text style={styles.searchResultTypeTxt}>{item._type.toUpperCase()}</Text>
+                        <Text style={styles.searchResultTypeTxt}>{(item._type || "post").toUpperCase()}</Text>
                       </View>
                       <Text style={styles.searchResultText} numberOfLines={3}>
                         {item.title || item.content}
@@ -440,7 +514,14 @@ export default function HomeScreen() {
                 <SectionHeader title="Featured Today" icon="star-four-points" />
                 <TouchableOpacity
                   style={styles.featuredBanner}
-                  onPress={() => router.push(`/book/${books[0].id}` as any)}
+                  onPress={() => {
+                    const featured = books[0];
+                    if (featured.price > 0) {
+                      router.push(`/book/${featured.id}/checkout` as any);
+                    } else {
+                      router.push(`/book/${featured.id}` as any);
+                    }
+                  }}
                   activeOpacity={0.9}
                 >
                   <Image
@@ -454,6 +535,12 @@ export default function HomeScreen() {
                     </View>
                     <Text style={styles.featuredTitle} numberOfLines={2}>{books[0].title}</Text>
                     <Text style={styles.featuredAuthor}>{books[0].authorName || "Writha Author"}</Text>
+                    {books[0].price > 0 && (
+                      <View style={styles.featuredPricePill}>
+                        <Ionicons name="cart-outline" size={12} color="#000" />
+                        <Text style={styles.featuredPriceTxt}>₦{books[0].price} — Tap to Preview</Text>
+                      </View>
+                    )}
                   </View>
                 </TouchableOpacity>
               </View>
@@ -489,17 +576,24 @@ export default function HomeScreen() {
               )}
             </View>
 
-            {/* ── 4. TRENDING DISCUSSIONS ── */}
+            {/* ── 4. TRENDING DISCUSSIONS & ARTICLES ── */}
             <View style={styles.section}>
-              <SectionHeader title="Trending Discussions" icon="forum" onSeeAll={() => {}} />
-              {discussions.length === 0 ? (
-                <EmptyCard emoji="💬" text="Start the first discussion!" />
+              <SectionHeader
+                title="Trending Discussions & Articles"
+                icon="forum"
+                onSeeAll={() => router.push("/create" as any)}
+              />
+              {feedItems.length === 0 ? (
+                <EmptyCard emoji="💬" text="No posts yet. Start the first discussion!" />
               ) : (
-                <View style={styles.discGrid}>
-                  {discussions.slice(0, 6).map((item) => (
-                    <DiscussionCard key={item.id} item={item} />
-                  ))}
-                </View>
+                <>
+                  {/* FILTER TABS */}
+                  <FeedFilterTabs
+                    discussions={discussions}
+                    articles={articles}
+                    feedItems={feedItems}
+                  />
+                </>
               )}
             </View>
 
@@ -551,7 +645,7 @@ export default function HomeScreen() {
             </View>
           </TouchableOpacity>
 
-          {/* RESEARCH */}
+          {/* RESEARCH / FULL BOOK */}
           <TouchableOpacity
             style={styles.fabMenuItem}
             onPress={() => { setFabOpen(false); router.push("/create" as any); }}
@@ -565,10 +659,10 @@ export default function HomeScreen() {
             </View>
           </TouchableOpacity>
 
-          {/* DISCUSSION */}
+          {/* DISCUSSION — routes to create.tsx */}
           <TouchableOpacity
             style={styles.fabMenuItem}
-            onPress={() => { setFabOpen(false); setShowDiscModal(true); }}
+            onPress={() => { setFabOpen(false); router.push("/create" as any); }}
           >
             <View style={styles.fabMenuLabel}>
               <Text style={styles.fabMenuLabelTxt}>Discussion</Text>
@@ -588,7 +682,7 @@ export default function HomeScreen() {
         </Animated.View>
       </TouchableOpacity>
 
-      {/* ── DISCUSSION MODAL ── */}
+      {/* DISCUSSION MODAL — kept as quick-post fallback */}
       <Modal visible={showDiscModal} animationType="slide" transparent>
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -598,7 +692,7 @@ export default function HomeScreen() {
             <View style={styles.modalHandle} />
             <View style={styles.modalHeader}>
               <View>
-                <Text style={styles.modalTitle}>New Discussion</Text>
+                <Text style={styles.modalTitle}>Quick Discussion</Text>
                 <Text style={styles.modalSub}>Share a thought with the Writha community</Text>
               </View>
               <TouchableOpacity onPress={() => setShowDiscModal(false)}>
@@ -606,7 +700,6 @@ export default function HomeScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* USER INFO */}
             <View style={styles.modalUserRow}>
               {userPhoto ? (
                 <Image source={{ uri: userPhoto }} style={styles.modalAvatar} />
@@ -630,7 +723,6 @@ export default function HomeScreen() {
               autoFocus
               maxLength={1000}
             />
-
             <Text style={styles.charCount}>{newPost.length}/1000</Text>
 
             <View style={styles.webToggleRow}>
@@ -667,6 +759,121 @@ export default function HomeScreen() {
   );
 }
 
+// ── FEED FILTER TABS (Discussion vs Articles) ─────────────────────────────
+function FeedFilterTabs({
+  discussions, articles, feedItems,
+}: {
+  discussions: any[]; articles: any[]; feedItems: any[];
+}) {
+  const [activeFilter, setActiveFilter] = useState<"all" | "discussions" | "articles">("all");
+  const router = useRouter();
+
+  const displayed = useMemo(() => {
+    if (activeFilter === "discussions") return discussions;
+    if (activeFilter === "articles") return articles;
+    return feedItems;
+  }, [activeFilter, discussions, articles, feedItems]);
+
+  const user = auth.currentUser;
+
+  const toggleLike = async (id: string, likedBy: string[] = []) => {
+    if (!user) return;
+    const isLiked = likedBy.includes(user.uid);
+    try {
+      await updateDoc(doc(db, "feed", id), {
+        likesCount: increment(isLiked ? -1 : 1),
+        likedBy: isLiked ? arrayRemove(user.uid) : arrayUnion(user.uid),
+      });
+    } catch (e) { console.error(e); }
+  };
+
+  return (
+    <View>
+      {/* Filter pills */}
+      <View style={styles.filterRow}>
+        {[
+          { key: "all", label: `All (${feedItems.length})` },
+          { key: "discussions", label: `💬 Discussions (${discussions.length})` },
+          { key: "articles", label: `📰 Articles (${articles.length})` },
+        ].map((f) => (
+          <TouchableOpacity
+            key={f.key}
+            style={[styles.filterPill, activeFilter === f.key && styles.filterPillActive]}
+            onPress={() => setActiveFilter(f.key as any)}
+          >
+            <Text style={[styles.filterPillTxt, activeFilter === f.key && styles.filterPillTxtActive]}>
+              {f.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* Feed grid */}
+      <View style={styles.discGrid}>
+        {displayed.slice(0, 6).map((item) => {
+          const isLiked = item.likedBy?.includes(user?.uid);
+          const isArticle = item.type === "article";
+          return (
+            <View key={item.id} style={[styles.discCard, isArticle && styles.articleCard]}>
+              <TouchableOpacity
+                onPress={() => router.push(`/discussion/${item.id}/comments` as any)}
+                activeOpacity={0.85}
+              >
+                {isArticle && item.coverUrl && (
+                  <Image source={{ uri: item.coverUrl }} style={styles.articleCover} />
+                )}
+                <View style={styles.discHeader}>
+                  {item.userPhoto ? (
+                    <Image source={{ uri: item.userPhoto }} style={styles.discAvatar} />
+                  ) : (
+                    <View style={[styles.discAvatar, styles.discAvatarFallback]}>
+                      <Text style={{ color: THEME.accent, fontWeight: "900", fontSize: 11 }}>
+                        {(item.userName || "W")[0].toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                  <View style={{ flex: 1, marginLeft: 8 }}>
+                    <Text style={styles.discUser} numberOfLines={1}>{item.userName || "Scholar"}</Text>
+                    <Text style={styles.discTime}>
+                      {item.createdAt?.toDate
+                        ? item.createdAt.toDate().toLocaleDateString("en-NG", { month: "short", day: "numeric" })
+                        : ""}
+                    </Text>
+                  </View>
+                  {isArticle && (
+                    <View style={styles.articleBadge}>
+                      <Text style={styles.articleBadgeTxt}>ARTICLE</Text>
+                    </View>
+                  )}
+                </View>
+                {isArticle && item.title && (
+                  <Text style={styles.articleTitle} numberOfLines={2}>{item.title}</Text>
+                )}
+                <Text style={styles.discContent} numberOfLines={3}>
+                  {item.content}
+                </Text>
+              </TouchableOpacity>
+              <View style={styles.discActions}>
+                <TouchableOpacity style={styles.discActionBtn} onPress={() => toggleLike(item.id, item.likedBy)}>
+                  <Ionicons name={isLiked ? "heart" : "heart-outline"} size={14} color={isLiked ? THEME.red : THEME.purpleLight} />
+                  <Text style={styles.discActionTxt}>{item.likesCount || 0}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.discActionBtn} onPress={() => router.push(`/discussion/${item.id}/comments` as any)}>
+                  <Ionicons name="chatbubble-outline" size={13} color={THEME.purpleLight} />
+                  <Text style={styles.discActionTxt}>{item.commentsCount || 0}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.discActionBtn} onPress={() => Share.share({ message: `${item.title || item.content} — Writha` })}>
+                  <Ionicons name="share-social-outline" size={13} color={THEME.accent} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: THEME.bg },
   loader: { flex: 1, backgroundColor: THEME.bg, justifyContent: "center", alignItems: "center" },
@@ -699,20 +906,25 @@ const styles = StyleSheet.create({
   emptyCard: { marginHorizontal: 16, backgroundColor: THEME.ui, borderRadius: 18, padding: 24, alignItems: "center", borderWidth: 1, borderColor: THEME.ui2 },
   emptyCardTxt: { color: THEME.textMuted, fontSize: 13, marginTop: 8, textAlign: "center" },
 
-  // Featured banner
-  featuredBanner: { marginHorizontal: 16, height: 180, borderRadius: 22, overflow: "hidden", borderWidth: 1.5, borderColor: THEME.accent },
+  // Featured
+  featuredBanner: { marginHorizontal: 16, height: 200, borderRadius: 22, overflow: "hidden", borderWidth: 1.5, borderColor: THEME.accent },
   featuredImg: { ...StyleSheet.absoluteFillObject },
   featuredOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(15,7,26,0.65)", padding: 20, justifyContent: "flex-end" },
   featuredBadge: { backgroundColor: THEME.accent, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, alignSelf: "flex-start", marginBottom: 8 },
   featuredBadgeTxt: { color: "#000", fontSize: 9, fontWeight: "900" },
   featuredTitle: { color: THEME.text, fontSize: 20, fontWeight: "900", lineHeight: 26 },
   featuredAuthor: { color: THEME.purpleLight, fontSize: 12, marginTop: 4 },
+  featuredPricePill: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: THEME.accent, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, alignSelf: "flex-start", marginTop: 10 },
+  featuredPriceTxt: { color: "#000", fontSize: 11, fontWeight: "900" },
 
   // Book cards
   bookCard: { width: 140 },
   bookCoverFrame: { borderRadius: 14, borderWidth: 2, borderColor: THEME.accent, overflow: "hidden", position: "relative" },
   bookCover: { width: 140, height: 196 },
   pricePill: { position: "absolute", top: 8, right: 8, backgroundColor: "rgba(0,0,0,0.75)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1, borderColor: THEME.accent },
+  pricePillPaid: { borderColor: THEME.green },
+  previewBadge: { position: "absolute", bottom: 8, left: 8, flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: "rgba(0,0,0,0.7)", paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6 },
+  previewBadgeTxt: { color: "#fff", fontSize: 8, fontWeight: "900" },
   priceText: { color: THEME.accent, fontSize: 9, fontWeight: "900" },
   bookTitle: { color: THEME.text, fontSize: 12, fontWeight: "800", marginTop: 8 },
   bookAuthor: { color: THEME.textMuted, fontSize: 10, marginTop: 2 },
@@ -731,9 +943,21 @@ const styles = StyleSheet.create({
   weaveFooter: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 12 },
   weaveFooterTxt: { color: THEME.textMuted, fontSize: 11 },
 
-  // Discussion grid
+  // Feed filter
+  filterRow: { flexDirection: "row", paddingHorizontal: 16, gap: 8, marginBottom: 14, flexWrap: "wrap" },
+  filterPill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.ui2 },
+  filterPillActive: { backgroundColor: THEME.accent, borderColor: THEME.accent },
+  filterPillTxt: { color: THEME.textMuted, fontSize: 11, fontWeight: "700" },
+  filterPillTxtActive: { color: "#000" },
+
+  // Discussion/Article grid
   discGrid: { paddingHorizontal: 16, flexDirection: "row", flexWrap: "wrap", gap: 12 },
   discCard: { width: (width - 44) / 2, backgroundColor: THEME.ui, borderRadius: 18, padding: 14, borderWidth: 1, borderColor: THEME.ui2 },
+  articleCard: { borderColor: "#38BDF8" + "50" },
+  articleCover: { width: "100%", height: 80, borderRadius: 10, marginBottom: 10 },
+  articleBadge: { backgroundColor: "#38BDF8" + "25", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  articleBadgeTxt: { color: "#38BDF8", fontSize: 8, fontWeight: "900" },
+  articleTitle: { color: THEME.text, fontWeight: "900", fontSize: 12, marginBottom: 6, lineHeight: 17 },
   discHeader: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
   discAvatar: { width: 26, height: 26, borderRadius: 8 },
   discAvatarFallback: { backgroundColor: THEME.purple, justifyContent: "center", alignItems: "center" },
@@ -753,10 +977,10 @@ const styles = StyleSheet.create({
   groupName: { color: THEME.text, fontSize: 11, fontWeight: "700", textAlign: "center", marginTop: 8 },
   groupMembers: { color: THEME.textMuted, fontSize: 9, marginTop: 2 },
 
-  // Search results
+  // Search
   clearSearchBtn: { flexDirection: "row", alignItems: "center", gap: 6, marginHorizontal: 16, marginBottom: 14 },
   clearSearchTxt: { color: THEME.accent, fontWeight: "700", fontSize: 13 },
-  searchResultCard: { width: 170, backgroundColor: THEME.ui, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: THEME.ui2, justifyContent: "center" },
+  searchResultCard: { width: 170, backgroundColor: THEME.ui, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: THEME.ui2 },
   searchResultTypeBadge: { backgroundColor: THEME.accentDim, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, alignSelf: "flex-start", marginBottom: 8 },
   searchResultTypeTxt: { color: THEME.accent, fontSize: 8, fontWeight: "900" },
   searchResultText: { color: THEME.text, fontSize: 13, fontWeight: "700", lineHeight: 19 },
