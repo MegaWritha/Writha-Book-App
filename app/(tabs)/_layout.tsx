@@ -45,7 +45,7 @@ export default function TabLayout() {
       />
       
       <Tabs.Screen
-        name="groups"
+        name="feed"
         options={{
           tabBarIcon: ({ color }) => <Ionicons name="grid-sharp" size={22} color={color} />,
         }}

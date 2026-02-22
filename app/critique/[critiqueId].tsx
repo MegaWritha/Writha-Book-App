@@ -12,7 +12,7 @@ export default function CritiqueView() {
 
   useEffect(() => {
     const fetchCritique = async () => {
-      const docSnap = await getDoc(doc(db, "discover", critiqueId as string));
+      const docSnap = await getDoc(doc(db, "feed", critiqueId as string));
       if (docSnap.exists()) setData(docSnap.data());
     };
     fetchCritique();

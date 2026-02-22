@@ -19,7 +19,7 @@ export default function ShareModal({ visible, onClose, postData }: any) {
   const handleReWeave = async () => {
     if (!auth.currentUser) return;
     try {
-      await addDoc(collection(db, "discover"), {
+      await addDoc(collection(db, "feed"), {
         ...postData,
         sharedBy: auth.currentUser.uid,
         authorName: auth.currentUser.displayName || "Scholar",

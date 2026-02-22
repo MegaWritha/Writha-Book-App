@@ -124,7 +124,7 @@ export default function CreateWeave() {
         )}
         {type === "Findings" && (
           <View style={styles.card}>
-            <Text style={styles.cardLabel}>KEY DISCOVERIES</Text>
+            <Text style={styles.cardLabel}>KEY IES</Text>
             <TextInput style={[styles.cardInp, {height: 80}]} placeholder="What did you uncover?" multiline value={findings} onChangeText={setFindings} />
           </View>
         )}
