@@ -19,6 +19,7 @@ interface BookItem {
   bookId?: string;
   title?: string;
   cover?: string;
+  coverUrl?: string;
   progress?: number;
   isOffline?: boolean;
   type?: "book" | "weave" | "research";
@@ -57,7 +58,7 @@ export default function LibraryScreen() {
 
     // PUBLISHING & SUBMISSION TRACKING (Uses manuscripts collection)
     const unsubWorks = onSnapshot(
-      query(collection(db, "manuscripts"), where("authorId", "==", user.uid)),
+      query(collection(db, "books"), where("authorId", "==", user.uid)),
       (snap) => {
         setMyWorks(snap.docs.map(d => ({ id: d.id, ...d.data() } as BookItem)));
       }
@@ -99,7 +100,7 @@ export default function LibraryScreen() {
     >
       <View style={styles.coverWrapper}>
         <Image
-          source={{ uri: item.cover || "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c" }}
+          source={{ uri: item.coverUrl ||item.cover || "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c" }}
           style={styles.coverImg}
         />
 

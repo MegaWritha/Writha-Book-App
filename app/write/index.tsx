@@ -85,7 +85,7 @@ export default function WrithaStudio() {
     try {
       status === "published" ? setPublishing(true) : setSavingDraft(true);
       
-      await addDoc(collection(db, "manuscripts"), {
+      await addDoc(collection(db, "books"), {
         title: title.trim(),
         authorName: authorName.trim() || user.displayName || "Unknown Author",
         description: description.trim(),

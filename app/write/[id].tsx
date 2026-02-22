@@ -43,7 +43,7 @@ export default function WrithaExecutiveStudio() {
     if (id && id !== "new") {
       const loadManuscript = async () => {
         try {
-          const snap = await getDoc(doc(db, "manuscripts", id as string));
+          const snap = await getDoc(doc(db, "books", id as string));
           if (snap.exists()) {
             setForm(prev => ({ ...prev, ...snap.data() }));
           }
@@ -103,11 +103,13 @@ export default function WrithaExecutiveStudio() {
 
     try {
       // Consistent with Library Screen requirements
-      await setDoc(doc(db, "manuscripts", docId), {
+      await setDoc(doc(db, "books", docId), {
         ...form,
         authorId: user.uid,
         authorName: user.displayName || "Anonymous Creator",
         likesCount: 0,
+        commentsCount: 0,
+        likedBy: [],
         views: 0,
         status: status, // "submitted" = Queue, "draft" = Drafts tab
         updatedAt: serverTimestamp(),
@@ -308,7 +310,7 @@ export default function WrithaExecutiveStudio() {
                 <TouchableOpacity style={styles.dangerZone} onPress={() => {
                     Alert.alert("DELETE FOREVER?", "This removes your work from the archive.", [
                         { text: "Cancel" },
-                        { text: "DELETE", style: 'destructive', onPress: async () => { await deleteDoc(doc(db, "manuscripts", id as string)); router.back(); }}
+                        { text: "DELETE", style: 'destructive', onPress: async () => { await deleteDoc(doc(db, "books", id as string)); router.back(); }}
                     ]);
                 }}>
                    <Ionicons name="trash-outline" size={18} color="#FF4444" />

@@ -12,7 +12,8 @@ import { auth, db } from "../../lib/firebase";
 import { 
   collection, query, onSnapshot, doc, limit, 
   orderBy, addDoc, serverTimestamp, updateDoc, increment,
-  arrayUnion, arrayRemove
+  arrayUnion, arrayRemove,
+  where
 } from "firebase/firestore";
 import { useFeedback } from "../../components/FeedbackProvider"; 
 import { WrithaButton } from "../../components/WrithaButton";    
@@ -74,7 +75,7 @@ export default function HomeScreen() {
       }
     });
 
-    const unsubBooks = onSnapshot(query(collection(db, "books"), limit(20)), (snap) => {
+    const unsubBooks = onSnapshot(query(collection(db, "books"), where("status", "==", "published"), limit(20)), (snap) => {
       setBooks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
