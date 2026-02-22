@@ -1,77 +1,113 @@
 import React, { useEffect, useState } from "react";
-import { TouchableOpacity, Text, StyleSheet, View } from "react-native";
+import { TouchableOpacity, Text, StyleSheet, View, ActivityIndicator } from "react-native";
 import { auth, db } from "@/lib/firebase";
-import { doc, getDoc, setDoc, deleteDoc, onSnapshot, serverTimestamp } from "firebase/firestore";
-import { Ionicons } from "@expo/vector-icons"; // NEW: Importing icons for a premium look
+import {
+  doc, setDoc, deleteDoc, onSnapshot, serverTimestamp, increment, updateDoc
+} from "firebase/firestore";
+import { Ionicons } from "@expo/vector-icons";
 
 export default function FollowButton({ targetUserId }: { targetUserId: string }) {
   const currentUser = auth.currentUser;
   const currentUserId = currentUser?.uid;
   const [isFollowing, setIsFollowing] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!currentUserId || !targetUserId) return;
+    if (!currentUserId || !targetUserId || currentUserId === targetUserId) return;
 
-    const followRef = doc(db, "users", currentUserId, "followbutton", "list", targetUserId);
-    
-    const unsub = onSnapshot(followRef, (docSnap) => {
-      setIsFollowing(docSnap.exists());
+    // ✅ FIX: was "followbutton/list/targetUserId" (5 segments - WRONG)
+    // Now correctly: "users/uid/following/targetUserId" (4 segments - CORRECT)
+    const followRef = doc(db, "users", currentUserId, "following", targetUserId);
+
+    const unsub = onSnapshot(followRef, (snap) => {
+      setIsFollowing(snap.exists());
     });
 
     return () => unsub();
-  }, [targetUserId, currentUserId]); // Fixed: Added currentUserId to dependencies
+  }, [targetUserId, currentUserId]);
 
   const toggleFollow = async () => {
-    if (!currentUserId || !targetUserId) return;
+    if (!currentUserId || !targetUserId || currentUserId === targetUserId) return;
+    setLoading(true);
 
-    const myFollowingRef = doc(db, "users", currentUserId, "followbutton", "list", targetUserId);
-    const theirFollowersRef = doc(db, "users", targetUserId, "followers", "list", currentUserId);
+    // ✅ FIX: All paths now use correct 4-segment structure
+    const myFollowingRef = doc(db, "users", currentUserId, "following", targetUserId);
+    const theirFollowersRef = doc(db, "users", targetUserId, "followers", currentUserId);
+    const myProfileRef = doc(db, "users", currentUserId);
+    const theirProfileRef = doc(db, "users", targetUserId);
 
-    if (isFollowing) {
-      await deleteDoc(myFollowingRef);
-      await deleteDoc(theirFollowersRef);
-    } else {
-      // 1. YOUR ORIGINAL FOLLOW LOGIC
-      await setDoc(myFollowingRef, { 
-        followedAt: new Date(),
-        uid: targetUserId 
-      });
-      await setDoc(theirFollowersRef, { 
-        followedAt: new Date(),
-        uid: currentUserId 
-      });
+    try {
+      if (isFollowing) {
+        // UNFOLLOW
+        await deleteDoc(myFollowingRef);
+        await deleteDoc(theirFollowersRef);
 
-      // 2. TRIGGER NOTIFICATION FOR THE TARGET USER
-      const notifId = `${currentUserId}_follow_${Date.now()}`;
-      const notifRef = doc(db, "users", targetUserId, "notifications", notifId);
+        // Decrement counts
+        await updateDoc(myProfileRef, { followingCount: increment(-1) });
+        await updateDoc(theirProfileRef, { followersCount: increment(-1) });
+      } else {
+        // FOLLOW
+        await setDoc(myFollowingRef, {
+          followedAt: serverTimestamp(),
+          uid: targetUserId,
+        });
+        await setDoc(theirFollowersRef, {
+          followedAt: serverTimestamp(),
+          uid: currentUserId,
+        });
 
-      await setDoc(notifRef, {
-        type: "follow",
-        fromId: currentUserId,
-        fromUsername: currentUser?.displayName || "A Scholar",
-        fromImage: currentUser?.photoURL || "https://ui-avatars.com/api/?name=S",
-        message: "started following your research.",
-        read: false,
-        timestamp: serverTimestamp(),
-      });
+        // Increment counts
+        await updateDoc(myProfileRef, { followingCount: increment(1) });
+        await updateDoc(theirProfileRef, { followersCount: increment(1) });
+
+        // Send notification
+        const notifRef = doc(
+          db,
+          "users", targetUserId,
+          "notifications", `${currentUserId}_follow_${Date.now()}`
+        );
+        await setDoc(notifRef, {
+          type: "follow",
+          fromId: currentUserId,
+          fromUsername: currentUser?.displayName || "A Scholar",
+          fromImage: currentUser?.photoURL || "",
+          message: "started following you on Writha.",
+          read: false,
+          timestamp: serverTimestamp(),
+        });
+      }
+    } catch (e) {
+      console.error("Follow error:", e);
+    } finally {
+      setLoading(false);
     }
   };
 
+  // Don't show button on own profile
+  if (currentUserId === targetUserId) return null;
+
   return (
-    <TouchableOpacity 
-      onPress={toggleFollow} 
-      activeOpacity={0.8} // Makes the tap animation feel smoother
+    <TouchableOpacity
+      onPress={toggleFollow}
+      activeOpacity={0.8}
+      disabled={loading}
       style={[styles.btn, isFollowing ? styles.btnActive : styles.btnInactive]}
     >
-      <View style={styles.contentContainer}>
-        <Ionicons 
-          name={isFollowing ? "checkmark-circle" : "person-add"} 
-          size={18} 
-          color={isFollowing ? "#FFD700" : "#0F071A"} 
-        />
-        <Text style={[styles.text, isFollowing ? styles.textActive : styles.textInactive]}>
-          {isFollowing ? "Following" : "Follow"}
-        </Text>
+      <View style={styles.inner}>
+        {loading ? (
+          <ActivityIndicator size="small" color={isFollowing ? "#FFD700" : "#0F071A"} />
+        ) : (
+          <>
+            <Ionicons
+              name={isFollowing ? "checkmark-circle" : "person-add"}
+              size={18}
+              color={isFollowing ? "#FFD700" : "#0F071A"}
+            />
+            <Text style={[styles.text, isFollowing ? styles.textActive : styles.textInactive]}>
+              {isFollowing ? "Following" : "Follow"}
+            </Text>
+          </>
+        )}
       </View>
     </TouchableOpacity>
   );
@@ -81,40 +117,39 @@ const styles = StyleSheet.create({
   btn: {
     paddingVertical: 12,
     paddingHorizontal: 24,
-    borderRadius: 25, // Creates a sleek "pill" shape
+    borderRadius: 25,
     alignItems: "center",
     justifyContent: "center",
     minWidth: 140,
-    // Adds a fancy shadow
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
-    elevation: 6, // Shadow for Android
+    elevation: 6,
   },
   btnInactive: {
-    backgroundColor: "#FFD700", // Bright gold when they need to follow
+    backgroundColor: "#FFD700",
   },
   btnActive: {
-    backgroundColor: "#1E1135", // Sinks into the dark theme when following
+    backgroundColor: "#1E1135",
     borderWidth: 1.5,
     borderColor: "#FFD700",
   },
-  contentContainer: {
-    flexDirection: "row", // Places the icon and text side-by-side
+  inner: {
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8, // Adds perfect spacing between the icon and the text
+    gap: 8,
   },
-  text: { 
-    fontWeight: "900", // Makes the text extra bold and punchy
+  text: {
+    fontWeight: "900",
     fontSize: 15,
     letterSpacing: 0.5,
   },
   textInactive: {
-    color: "#0F071A", // Dark text on the gold button
+    color: "#0F071A",
   },
   textActive: {
-    color: "#FFD700", // Gold text on the dark button
-  }
+    color: "#FFD700",
+  },
 });

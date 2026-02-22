@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { db, auth } from '@/lib/firebase';
-import { collection, addDoc, serverTimestamp, doc, setDoc } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, doc, setDoc, updateDoc, increment } from 'firebase/firestore';
 import { Ionicons } from '@expo/vector-icons';
 
 export default function CreateWeave() {
@@ -35,6 +35,8 @@ export default function CreateWeave() {
 
     try {
       const user = auth.currentUser;
+      if (!user) throw new Error("Not authenticated");
+
       const weaveData = {
         bookId: bookId || "global",
         bookTitle: bookTitle || "General Thought",
@@ -45,16 +47,16 @@ export default function CreateWeave() {
         sources: type === "Research" ? sources : null,
         findings: type === "Findings" ? findings : null,
         isPublic,
-        userId: user?.uid, 
-        userName: user?.displayName || "Writha Member",
-        userPhoto: user?.photoURL || "https://picsum.photos/100",
+        userId: user.uid, 
+        userName: user.displayName || "Writha Member",
+        userPhoto: user.photoURL || "https://picsum.photos/100",
         createdAt: serverTimestamp(),
       };
 
-      // 1. Save to weaves
+      // 1. Save to weaves collection
       const docRef = await addDoc(collection(db, "weaves"), weaveData);
 
-      // 2. Mirror to global_feed immediately
+      // 2. Mirror to global feed if public
       if (isPublic) {
         await setDoc(doc(db, "feed", docRef.id), {
           ...weaveData,
@@ -63,11 +65,14 @@ export default function CreateWeave() {
         });
       }
 
-      // ✅ SUCCESS UI TRIGGER
+      // 3. ✅ Increment weaveCount on user profile
+      await updateDoc(doc(db, "users", user.uid), {
+        weaveCount: increment(1),
+      });
+
       setIsSubmitting(false);
       setWasPublished(true); 
 
-      // Delay navigation so you actually see the green button
       setTimeout(() => {
         router.back();
       }, 1800);
@@ -84,7 +89,9 @@ export default function CreateWeave() {
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{flex: 1}}>
       <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 100 }}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}><Ionicons name="close" size={28} color="#FFF" /></TouchableOpacity>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Ionicons name="close" size={28} color="#FFF" />
+          </TouchableOpacity>
           <Text style={styles.headerTitle}>WEAVE SUITE</Text>
           <View style={{width: 28}} />
         </View>
@@ -109,7 +116,6 @@ export default function CreateWeave() {
           ))}
         </ScrollView>
 
-        {/* ... (Critique, Research, Findings sections remain exactly the same) */}
         {type === "Critique" && (
           <View style={styles.card}>
             <Text style={styles.cardLabel}>CRITICAL RATING</Text>
@@ -124,7 +130,7 @@ export default function CreateWeave() {
         )}
         {type === "Findings" && (
           <View style={styles.card}>
-            <Text style={styles.cardLabel}>KEY IES</Text>
+            <Text style={styles.cardLabel}>KEY FINDINGS</Text>
             <TextInput style={[styles.cardInp, {height: 80}]} placeholder="What did you uncover?" multiline value={findings} onChangeText={setFindings} />
           </View>
         )}
@@ -147,7 +153,6 @@ export default function CreateWeave() {
           <Switch value={isPublic} onValueChange={setIsPublic} trackColor={{ false: '#1E1135', true: '#FFD700' }} thumbColor="#FFF" />
         </View>
 
-        {/* REINFORCED BUTTON LOGIC */}
         <TouchableOpacity 
           style={[
             styles.pubBtn, 
