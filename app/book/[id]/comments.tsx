@@ -1,269 +1,302 @@
-import React, { useEffect, useState } from "react";
-import { 
-  View, Text, StyleSheet, FlatList, TextInput, 
-  TouchableOpacity, Image, ActivityIndicator, 
-  KeyboardAvoidingView, Platform, Alert
+import React, { useEffect, useState, useMemo } from "react";
+import {
+  View, Text, StyleSheet, ScrollView, TouchableOpacity,
+  ActivityIndicator, StatusBar, Dimensions,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import { db } from "@/lib/firebase";
+import { doc, onSnapshot } from "firebase/firestore";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-// Using @ alias for absolute path safety
-import { db, auth } from "@/lib/firebase"; 
-import { 
-  collection, addDoc, query, orderBy, 
-  onSnapshot, serverTimestamp, getDocs, doc, updateDoc, arrayUnion, 
-  increment,
-  deleteDoc
-} from "firebase/firestore";
+const { width } = Dimensions.get("window");
 
-export default function BookComments() {
-  const { id } = useLocalSearchParams(); 
+const THEME = {
+  bg: "#0F071A", ui: "#1E1135", ui2: "#2D1B4D",
+  accent: "#FFD700", purple: "#6D28D9", purpleLight: "#A78BFA",
+  text: "#EDE8F5", textMuted: "#7A6E8A", green: "#22C55E",
+};
+
+interface Section {
+  index: number;
+  title: string;
+  content: string;
+  wordCount: number;
+  readTime: number;
+  type: "chapter" | "act" | "part" | "named";
+}
+
+export default function ChaptersScreen() {
+  const { id } = useLocalSearchParams();
   const router = useRouter();
-  
-  const [comments, setComments] = useState<any[]>([]);
-  const [text, setText] = useState("");
+  const insets = useSafeAreaInsets();
+  const bookId = useMemo(() => (Array.isArray(id) ? id[0] : id), [id]);
+
+  const [sections, setSections] = useState<Section[]>([]);
+  const [bookTitle, setBookTitle] = useState("");
+  const [manuscriptMode, setManuscriptMode] = useState<"chapters" | "acts" | "full">("chapters");
   const [loading, setLoading] = useState(true);
-  const [replyTo, setReplyTo] = useState<any>(null);
 
-  // --- FETCH COMMENTS & SUB-COMMENTS ---
   useEffect(() => {
-    if (!id) {
-      setLoading(false); // If no ID, stop loading
-      return;
-    }
+    if (!bookId) return;
 
-    const q = query(collection(db, "feed", id as string, "comments"), orderBy("createdAt", "desc"));
-    
-    const unsub = onSnapshot(q, async (snap) => {
-      // If there are no comments, stop loading and clear list
-      if (snap.empty) {
-        setComments([]);
-        setLoading(false);
-        return;
+    const unsub = onSnapshot(doc(db, "books", bookId), (snap) => {
+      if (!snap.exists()) { setLoading(false); return; }
+
+      const data = snap.data();
+      setBookTitle(data.title || "");
+
+      const built: Section[] = [];
+
+      // ── CHAPTERS ARRAY ──────────────────────────────────────────────
+      if (Array.isArray(data.chapters) && data.chapters.length > 0) {
+        setManuscriptMode("chapters");
+        data.chapters.forEach((ch: any, i: number) => {
+          const content = ch.content || "";
+          const words = content.trim() ? content.trim().split(/\s+/).length : 0;
+          // Detect if title is a real name (not "Chapter X")
+          const rawTitle = ch.title || "";
+          const isNumbered = /^(chapter|part|section)\s*\d+/i.test(rawTitle);
+          built.push({
+            index: i,
+            title: rawTitle || `Chapter ${i + 1}`,
+            content,
+            wordCount: words,
+            readTime: Math.max(1, Math.ceil(words / 250)),
+            type: isNumbered ? "chapter" : "named",
+          });
+        });
+
+      // ── ACTS ARRAY ──────────────────────────────────────────────────
+      } else if (Array.isArray(data.acts) && data.acts.length > 0) {
+        setManuscriptMode("acts");
+        data.acts.forEach((act: any, i: number) => {
+          const content = act.content || "";
+          const words = content.trim() ? content.trim().split(/\s+/).length : 0;
+          built.push({
+            index: i,
+            title: act.title || `Act ${i + 1}`,
+            content,
+            wordCount: words,
+            readTime: Math.max(1, Math.ceil(words / 250)),
+            type: "act",
+          });
+        });
+
+      // ── FULL TEXT — split on headings or double newlines ────────────
+      } else if (data.content && typeof data.content === "string") {
+        setManuscriptMode("full");
+        // Try splitting on markdown headings (## Heading) or ALL CAPS lines
+        const headingRegex = /^(#{1,3}\s+.+|[A-Z][A-Z\s]{4,})$/gm;
+        const parts = data.content.split(headingRegex).filter(Boolean);
+
+        if (parts.length > 1) {
+          // Interleave headings with content
+          for (let i = 0; i < parts.length; i += 2) {
+            const heading = parts[i]?.replace(/^#+\s*/, "").trim() || `Part ${Math.ceil((i + 1) / 2)}`;
+            const content = parts[i + 1] || "";
+            const words = content.trim() ? content.trim().split(/\s+/).length : 0;
+            built.push({
+              index: Math.floor(i / 2),
+              title: heading,
+              content,
+              wordCount: words,
+              readTime: Math.max(1, Math.ceil(words / 250)),
+              type: "part",
+            });
+          }
+        } else {
+          // No headings — treat as single piece
+          const words = data.content.trim().split(/\s+/).length;
+          built.push({
+            index: 0,
+            title: data.title || "Full Manuscript",
+            content: data.content,
+            wordCount: words,
+            readTime: Math.max(1, Math.ceil(words / 250)),
+            type: "part",
+          });
+        }
       }
 
-      try {
-        const parentComments = await Promise.all(snap.docs.map(async (d) => {
-          const data = d.data();
-          
-          // Only fetch replies if you really need them nested
-          const subSnap = await getDocs(query(collection(db, "feed", id as string, "comments", d.id, "replies"), orderBy("createdAt", "asc")));
-          const replies = subSnap.docs.map(sd => ({ id: sd.id, ...sd.data() }));
-          
-          return { id: d.id, ...data, replies };
-        }));
-
-        setComments(parentComments);
-      } catch (err) {
-        console.error("Fetch Error:", err);
-      } finally {
-        // ALWAYS stop loading after the first successful attempt
-        setLoading(false);
-      }
-    }, (error) => {
-      console.error("Snapshot Error:", error);
+      setSections(built);
+      setLoading(false);
+    }, (err) => {
+      console.error("Firestore Error:", err);
       setLoading(false);
     });
 
     return () => unsub();
-  }, [id]);
+  }, [bookId]);
 
-  const handlePost = async () => {
-    if (!text.trim() || !id) return;
-    const user = auth.currentUser;
-    if (!user) return Alert.alert("Join the weave", "Please log in to comment.");
+  const totalWords = sections.reduce((a, s) => a + s.wordCount, 0);
+  const totalReadTime = sections.reduce((a, s) => a + s.readTime, 0);
 
-    const payload = {
-      text: text.trim(),
-      userId: user.uid,
-      userName: user.displayName || "Writha User",
-      userImg: user.photoURL || "https://picsum.photos/200",
-      createdAt: serverTimestamp()
-    };
+  const modeLabel =
+    manuscriptMode === "acts" ? "ACTS" :
+    sections.some(s => s.type === "named") ? "CHAPTERS & PARTS" :
+    "CHAPTERS";
 
-    try {
-      if (replyTo) {
-        await addDoc(collection(db, "books", id as string, "comments", replyTo.id, "replies"), payload);
-      } else {
-        await addDoc(collection(db, "books", id as string, "comments"), payload);
-        await updateDoc(doc(db, "books", id as string), { commentsCount: increment(1) }); // Increment comment count for feed item
-      }
-      setText("");
-      setReplyTo(null);
-    } catch (e) {
-      console.error("Post Error:", e);
-    }
+  const typeIcon = (type: Section["type"]) => {
+    if (type === "act") return "layers-outline";
+    if (type === "named") return "bookmark-outline";
+    return "book-outline";
   };
 
-  const handleFollow = async (targetUserId: string) => {
-    const user = auth.currentUser;
-    if (!user) return;
-    try {
-      await updateDoc(doc(db, "users", user.uid), { following: arrayUnion(targetUserId) });
-      Alert.alert("Success", "Following author");
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const handleDeleteComment = async (commentId: string) => {
-  Alert.alert("Delete Comment", "Are you sure? This cannot be undone.", [
-    { text: "Cancel", style: "cancel" },
-    { 
-      text: "Delete", 
-      style: "destructive", 
-      onPress: async () => {
-        try {
-          // 1. Delete the comment document
-          await deleteDoc(doc(db, "feed", id as string, "comments", commentId));
-          
-          // 2. Reduce the count on the main post
-          await updateDoc(doc(db, "feed", id as string), {
-            commentsCount: increment(-1)
-          });
-        } catch (e) {
-          console.error("Delete Error:", e);
-        }
-      } 
-    }
-  ]);
-};
+  if (loading) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color={THEME.accent} />
+      </View>
+    );
+  }
 
   return (
-    <KeyboardAvoidingView 
-      behavior={Platform.OS === "ios" ? "padding" : undefined} 
-      style={styles.main}
-      keyboardVerticalOffset={100}
-    >
-      {/* --- HEADER --- */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={28} color="#FFD700" />
-        </TouchableOpacity>
-        <View>
-          <Text style={styles.title}>Comments</Text>
-          <Text style={styles.subTitle}>Reader Discussions</Text>
-        </View>
-      </View>
+    <View style={styles.container}>
+      <StatusBar barStyle="light-content" />
 
-      {loading ? (
-        <View style={styles.center}><ActivityIndicator color="#FFD700" size="large" /></View>
-      ) : (
-        <FlatList 
-          data={comments}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={{padding: 20, paddingBottom: 150}}
-          renderItem={({item}) => (
-            <View style={styles.commentContainer}>
-              {/* Main Comment */}
-              <View style={styles.row}>
-                <TouchableOpacity onPress={() => router.push(`/profile/${item.userId}`)}>
-                  <Image source={{uri: item.userImg}} style={styles.pfp} />
-                </TouchableOpacity>
-                <View style={styles.bubble}>
-                  <View style={styles.bubbleTop}>
-                    <Text style={styles.uName}>{item.userName}</Text>
-                    <TouchableOpacity onPress={() => handleFollow(item.userId)} style={styles.followBadge}>
-                      <Text style={styles.followTxt}>Follow</Text>
-                    </TouchableOpacity>
+      {/* HEADER */}
+      <LinearGradient
+        colors={["#1A0B2E", THEME.bg]}
+        style={[styles.header, { paddingTop: insets.top + 16 }]}
+      >
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Ionicons name="chevron-back" size={24} color={THEME.text} />
+        </TouchableOpacity>
+        <View style={styles.headerCenter}>
+          <Text style={styles.headerSmall}>{modeLabel}</Text>
+          <Text style={styles.headerTitle} numberOfLines={1}>{bookTitle}</Text>
+        </View>
+        <View style={{ width: 40 }} />
+      </LinearGradient>
+
+      {/* STATS BAR */}
+      {sections.length > 0 && (
+        <View style={styles.statsBar}>
+          <View style={styles.statItem}>
+            <Text style={styles.statVal}>{sections.length}</Text>
+            <Text style={styles.statLbl}>
+              {manuscriptMode === "acts" ? "Acts" : "Sections"}
+            </Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statItem}>
+            <Text style={styles.statVal}>{totalWords.toLocaleString()}</Text>
+            <Text style={styles.statLbl}>Words</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statItem}>
+            <Text style={styles.statVal}>{totalReadTime}</Text>
+            <Text style={styles.statLbl}>Min Read</Text>
+          </View>
+        </View>
+      )}
+
+      <ScrollView
+        contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
+      >
+        {sections.length > 0 ? (
+          sections.map((section, idx) => (
+            <TouchableOpacity
+              key={idx}
+              style={styles.sectionCard}
+              onPress={() =>
+                router.push({
+                  pathname: "/book/[id]/reader",
+                  params: { id: bookId, sectionIndex: section.index },
+                } as any)
+              }
+              activeOpacity={0.85}
+            >
+              {/* Left — number or icon */}
+              <View style={styles.sectionLeft}>
+                {section.type === "named" ? (
+                  <View style={styles.iconCircle}>
+                    <Ionicons name={typeIcon(section.type)} size={16} color={THEME.accent} />
                   </View>
-                  <Text style={styles.uText}>{item.text}</Text>
-                  
-                  <View style={styles.actionRow}>
-                    <TouchableOpacity onPress={() => setReplyTo(item)} style={styles.action}>
-                      <Text style={styles.actionText}>Reply</Text>
-                    </TouchableOpacity>
-                    {item.userId === auth.currentUser?.uid && (
-                    <TouchableOpacity onPress={() => handleDeleteComment(item.id)} style={styles.action}>
-                        <Ionicons name="trash-outline" size={14} color="#EF4444" />
-                    </TouchableOpacity>
-                    )}
-                    <TouchableOpacity style={styles.action}>
-                      <Text style={styles.actionText}>Send Request</Text>
-                    </TouchableOpacity>
+                ) : (
+                  <LinearGradient
+                    colors={["#FFD700", "#B8860B"]}
+                    style={styles.numCircle}
+                  >
+                    <Text style={styles.numText}>{idx + 1}</Text>
+                  </LinearGradient>
+                )}
+              </View>
+
+              {/* Center — title + meta */}
+              <View style={styles.sectionCenter}>
+                {/* Show "Chapter X" label only if it's a numbered chapter */}
+                {section.type === "chapter" && (
+                  <Text style={styles.sectionTypeLabel}>
+                    {manuscriptMode === "acts" ? `ACT ${idx + 1}` : `CHAPTER ${idx + 1}`}
+                  </Text>
+                )}
+                {section.type === "act" && (
+                  <Text style={styles.sectionTypeLabel}>ACT {idx + 1}</Text>
+                )}
+                <Text style={styles.sectionTitle} numberOfLines={2}>
+                  {section.title}
+                </Text>
+                <View style={styles.sectionMeta}>
+                  <View style={styles.metaPill}>
+                    <Ionicons name="reader-outline" size={10} color={THEME.purpleLight} />
+                    <Text style={styles.metaPillTxt}>{section.wordCount.toLocaleString()} words</Text>
+                  </View>
+                  <View style={styles.metaPill}>
+                    <Ionicons name="time-outline" size={10} color={THEME.purpleLight} />
+                    <Text style={styles.metaPillTxt}>{section.readTime} min</Text>
                   </View>
                 </View>
               </View>
 
-              {/* Sub-Comments (Replies) */}
-              {item.replies?.map((reply: any) => (
-                <View key={reply.id} style={styles.replyRow}>
-                  <View style={styles.replyLine} />
-                  <Image source={{uri: reply.userImg}} style={styles.replyPfp} />
-                  <View style={[styles.bubble, {backgroundColor: '#130B21'}]}>
-                    <Text style={styles.uName}>{reply.userName}</Text>
-                    <Text style={styles.uText}>{reply.text}</Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          )}
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <MaterialCommunityIcons name="comment-text-outline" size={50} color="#333" />
-              <Text style={styles.emptyTxt}>The scrolls are empty. Be the first to speak.</Text>
-            </View>
-          }
-        />
-      )}
-
-      {/* --- INPUT --- */}
-      <View style={styles.inputWrapper}>
-        {replyTo && (
-          <View style={styles.replyingBar}>
-            <Text style={styles.replyingText}>Replying to {replyTo.userName}</Text>
-            <TouchableOpacity onPress={() => setReplyTo(null)}>
-              <Ionicons name="close-circle" size={18} color="#FFD700" />
+              {/* Right — arrow */}
+              <Ionicons name="chevron-forward" size={18} color={THEME.ui2} />
             </TouchableOpacity>
+          ))
+        ) : (
+          <View style={styles.emptyState}>
+            <MaterialCommunityIcons name="book-open-page-variant-outline" size={60} color={THEME.ui2} />
+            <Text style={styles.emptyTitle}>No sections found</Text>
+            <Text style={styles.emptySub}>
+              This book hasn't been structured into chapters yet.
+            </Text>
           </View>
         )}
-        <View style={styles.inputRow}>
-          <TextInput 
-            style={styles.input} 
-            placeholder="Write a thought..." 
-            placeholderTextColor="#6D28D9" 
-            value={text} 
-            onChangeText={setText}
-            multiline
-          />
-          <TouchableOpacity onPress={handlePost} style={styles.sendBtn}>
-            <Ionicons name="paper-plane" size={20} color="#000" />
-          </TouchableOpacity>
-        </View>
-      </View>
-    </KeyboardAvoidingView>
+        <View style={{ height: 80 }} />
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  main: { flex: 1, backgroundColor: "#0F071A" },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  header: { marginTop: 50, padding: 20, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#1E1135' },
-  backBtn: { marginRight: 15 },
-  title: { color: "#FFF", fontSize: 22, fontWeight: "900" },
-  subTitle: { color: '#FFD700', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 },
-  commentContainer: { marginBottom: 25 },
-  row: { flexDirection: 'row' },
-  pfp: { width: 45, height: 45, borderRadius: 22.5, borderWidth: 1.5, borderColor: '#FFD700' },
-  bubble: { flex: 1, marginLeft: 12, backgroundColor: '#1E1135', padding: 15, borderRadius: 20, borderWidth: 1, borderColor: '#333' },
-  bubbleTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
-  uName: { color: '#FFD700', fontWeight: 'bold', fontSize: 13 },
-  followBadge: { backgroundColor: '#4C1D95', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
-  followTxt: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
-  uText: { color: '#EEE', fontSize: 14, lineHeight: 20 },
-  actionRow: { flexDirection: 'row', marginTop: 12 },
-  action: { marginRight: 20 },
-  actionText: { color: '#A78BFA', fontSize: 11, fontWeight: 'bold' },
-  // Replies
-  replyRow: { flexDirection: 'row', marginLeft: 45, marginTop: 10 },
-  replyLine: { width: 2, backgroundColor: '#333', marginRight: 10, marginBottom: 15 },
-  replyPfp: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: '#A78BFA' },
-  empty: { alignItems: 'center', marginTop: 100 },
-  emptyTxt: { color: '#444', marginTop: 10, fontStyle: 'italic' },
-  inputWrapper: { backgroundColor: '#1E1135', borderTopWidth: 1, borderTopColor: '#4C1D95' },
-  replyingBar: { backgroundColor: '#2D1B4D', padding: 8, flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20 },
-  replyingText: { color: '#FFD700', fontSize: 11 },
-  inputRow: { flexDirection: 'row', padding: 15, alignItems: 'center', paddingBottom: Platform.OS === 'ios' ? 40 : 15 },
-  input: { flex: 1, color: '#FFF', fontSize: 15, maxHeight: 100 },
-  sendBtn: { backgroundColor: '#FFD700', width: 45, height: 45, borderRadius: 22.5, justifyContent: 'center', alignItems: 'center', marginLeft: 10 }
+  container: { flex: 1, backgroundColor: THEME.bg },
+  center: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: THEME.bg },
+  header: { paddingHorizontal: 16, paddingBottom: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  backBtn: { width: 40, height: 40, borderRadius: 13, backgroundColor: "rgba(255,255,255,0.06)", justifyContent: "center", alignItems: "center" },
+  headerCenter: { flex: 1, alignItems: "center" },
+  headerSmall: { color: THEME.accent, fontSize: 9, fontWeight: "900", letterSpacing: 3 },
+  headerTitle: { color: THEME.text, fontSize: 16, fontWeight: "900", marginTop: 3, maxWidth: width * 0.6, textAlign: "center" },
+  statsBar: { flexDirection: "row", backgroundColor: THEME.ui, marginHorizontal: 16, borderRadius: 16, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: THEME.ui2 },
+  statItem: { flex: 1, alignItems: "center" },
+  statVal: { color: THEME.accent, fontSize: 18, fontWeight: "900" },
+  statLbl: { color: THEME.textMuted, fontSize: 9, fontWeight: "700", marginTop: 2 },
+  statDivider: { width: 1, backgroundColor: THEME.ui2 },
+  list: { paddingHorizontal: 16 },
+  sectionCard: { flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui, borderRadius: 20, padding: 18, marginBottom: 12, borderWidth: 1, borderColor: THEME.ui2, gap: 14 },
+  sectionLeft: {},
+  numCircle: { width: 40, height: 40, borderRadius: 13, justifyContent: "center", alignItems: "center" },
+  numText: { color: "#000", fontWeight: "900", fontSize: 15 },
+  iconCircle: { width: 40, height: 40, borderRadius: 13, backgroundColor: "rgba(255,215,0,0.1)", justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: THEME.accent + "40" },
+  sectionCenter: { flex: 1 },
+  sectionTypeLabel: { color: THEME.textMuted, fontSize: 9, fontWeight: "900", letterSpacing: 1.5, marginBottom: 3 },
+  sectionTitle: { color: THEME.text, fontSize: 16, fontWeight: "800", lineHeight: 22 },
+  sectionMeta: { flexDirection: "row", gap: 8, marginTop: 6 },
+  metaPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: THEME.ui2, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  metaPillTxt: { color: THEME.purpleLight, fontSize: 9, fontWeight: "700" },
+  emptyState: { alignItems: "center", marginTop: 80, gap: 12 },
+  emptyTitle: { color: THEME.text, fontSize: 18, fontWeight: "800" },
+  emptySub: { color: THEME.textMuted, fontSize: 13, textAlign: "center", lineHeight: 20, paddingHorizontal: 30 },
 });
