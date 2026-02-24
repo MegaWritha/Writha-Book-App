@@ -1,15 +1,15 @@
 import React, { useEffect, useState, useMemo } from "react";
 import {
   View, Text, StyleSheet, ScrollView, Image, TouchableOpacity,
-  TextInput, Dimensions, StatusBar, ActivityIndicator, FlatList, Modal,
-  KeyboardAvoidingView, Platform, Switch, Keyboard, Share, Animated,
+  TextInput, Dimensions, StatusBar, ActivityIndicator, FlatList,
+  Keyboard, Share, Animated,
 } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { auth, db } from "../../lib/firebase";
 import {
   collection, query, onSnapshot, doc, limit,
-  orderBy, addDoc, serverTimestamp, updateDoc, increment,
+  orderBy, updateDoc, increment,
   arrayUnion, arrayRemove, where,
 } from "firebase/firestore";
 
@@ -64,7 +64,7 @@ const EmptyCard = ({ emoji, text }: { emoji: string; text: string }) => (
   </View>
 );
 
-// ── FEED CARD (horizontal, same style as weave card) ────────────────────
+// ── FEED CARD ───────────────────────────────────────────────────────────
 function FeedCard({
   item,
   onLike,
@@ -86,7 +86,6 @@ function FeedCard({
 
   return (
     <View style={[styles.feedCard, { borderColor }]}>
-      {/* Type badge */}
       <View style={[
         styles.feedBadge,
         isArticle && { backgroundColor: "#38BDF820" },
@@ -111,7 +110,6 @@ function FeedCard({
         <Text style={styles.feedContent} numberOfLines={3}>{item.content}</Text>
       </TouchableOpacity>
 
-      {/* Author row */}
       <View style={styles.feedAuthorRow}>
         {item.userPhoto ? (
           <Image source={{ uri: item.userPhoto }} style={styles.feedAvatar} />
@@ -130,7 +128,6 @@ function FeedCard({
         </Text>
       </View>
 
-      {/* Actions */}
       <View style={styles.feedActions}>
         <TouchableOpacity
           style={styles.feedActionBtn}
@@ -188,7 +185,6 @@ function FeedFilterTabs({
 
   return (
     <View>
-      {/* Single horizontal scrolling filter pills */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -218,7 +214,6 @@ function FeedFilterTabs({
         ))}
       </ScrollView>
 
-      {/* Horizontal cards — exactly like trending weaves */}
       {displayed.length === 0 ? (
         <EmptyCard emoji="💬" text="Nothing here yet." />
       ) : (
@@ -255,12 +250,6 @@ export default function HomeScreen() {
 
   const [fabOpen, setFabOpen] = useState(false);
   const fabAnim = useState(new Animated.Value(0))[0];
-
-  // Discussion modal — kept so the Discussion FAB opens it directly
-  const [showDiscModal, setShowDiscModal] = useState(false);
-  const [newPost, setNewPost] = useState("");
-  const [posting, setPosting] = useState(false);
-  const [publishToWeb, setPublishToWeb] = useState(false);
 
   const discussions = useMemo(
     () => feedItems.filter((f) => f.type === "discussion" || !f.type),
@@ -356,32 +345,6 @@ export default function HomeScreen() {
 
   const toggleFeedLike = (id: string, likedBy: string[] = []) => {
     toggleLike("feed", id, likedBy);
-  };
-
-  const publishDiscussion = async () => {
-    if (!newPost.trim()) return;
-    setPosting(true);
-    try {
-      await addDoc(collection(db, "feed"), {
-        content: newPost,
-        userId: user!.uid,
-        userName: displayName || "Scholar",
-        userPhoto: user?.photoURL || "",
-        likesCount: 0,
-        commentsCount: 0,
-        likedBy: [],
-        type: "discussion",
-        publishToWeb,
-        createdAt: serverTimestamp(),
-      });
-      setNewPost("");
-      setPublishToWeb(false);
-      setShowDiscModal(false);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setPosting(false);
-    }
   };
 
   const handleSearch = () => {
@@ -498,12 +461,11 @@ export default function HomeScreen() {
     </TouchableOpacity>
   );
 
-  // ── GROUP CARD ─────────────────────────────────────────────────────
-  // Tries /groups/[id] first, falls back gracefully
+  // ── GROUP CARD — FIX: routes to /group/${id} ───────────────────────
   const GroupCard = ({ item }: { item: any }) => (
     <TouchableOpacity
       style={styles.groupCard}
-      onPress={() => router.push(`/groups/${item.id}` as any)}
+      onPress={() => router.push(`/group/${item.id}` as any)}
       activeOpacity={0.85}
     >
       <View style={styles.groupImgFrame}>
@@ -558,7 +520,6 @@ export default function HomeScreen() {
           </Text>
         </View>
 
-        {/* Avatar → profile tab */}
         <TouchableOpacity
           onPress={() => router.push("/(tabs)/profile" as any)}
           activeOpacity={0.85}
@@ -731,12 +692,12 @@ export default function HomeScreen() {
               )}
             </View>
 
-            {/* 4. TRENDING — one horizontal line with filter pills */}
+            {/* 4. TRENDING */}
             <View style={styles.section}>
               <SectionHeader
                 title="Trending"
                 icon="forum"
-                onSeeAll={() => router.push("/create" as any)}
+                onSeeAll={() => router.push("/createDiscussion" as any)}
               />
               {feedItems.length === 0 ? (
                 <EmptyCard
@@ -773,7 +734,7 @@ export default function HomeScreen() {
               <SectionHeader
                 title="Active Groups"
                 icon="account-group"
-                onSeeAll={() => router.push("/group" as any)}
+                onSeeAll={() => router.push("/(tabs)/social" as any)}
               />
               {groups.length === 0 ? (
                 <EmptyCard emoji="👥" text="No groups yet. Create one!" />
@@ -795,6 +756,7 @@ export default function HomeScreen() {
       {/* FAB MENU */}
       {fabOpen && (
         <View style={styles.fabMenu}>
+
           {/* ARTICLE */}
           <TouchableOpacity
             style={styles.fabMenuItem}
@@ -812,12 +774,12 @@ export default function HomeScreen() {
             </View>
           </TouchableOpacity>
 
-          {/* RESEARCH — goes to create.tsx same as before */}
+          {/* RESEARCH — FIX: now goes to /createResearch */}
           <TouchableOpacity
             style={styles.fabMenuItem}
             onPress={() => {
               setFabOpen(false);
-              router.push("/create" as any);
+              router.push("/createResearch" as any);
             }}
           >
             <View style={styles.fabMenuLabel}>
@@ -829,12 +791,12 @@ export default function HomeScreen() {
             </View>
           </TouchableOpacity>
 
-          {/* DISCUSSION — opens the modal directly */}
+          {/* DISCUSSION — FIX: now goes to /createDiscussion */}
           <TouchableOpacity
             style={styles.fabMenuItem}
             onPress={() => {
               setFabOpen(false);
-              setShowDiscModal(true);
+              router.push("/createDiscussion" as any);
             }}
           >
             <View style={styles.fabMenuLabel}>
@@ -845,6 +807,7 @@ export default function HomeScreen() {
               <Ionicons name="chatbubbles-outline" size={20} color="#000" />
             </View>
           </TouchableOpacity>
+
         </View>
       )}
 
@@ -855,86 +818,6 @@ export default function HomeScreen() {
         </Animated.View>
       </TouchableOpacity>
 
-      {/* DISCUSSION MODAL */}
-      <Modal visible={showDiscModal} animationType="slide" transparent>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={styles.modalOverlay}
-        >
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHandle} />
-            <View style={styles.modalHeader}>
-              <View>
-                <Text style={styles.modalTitle}>Quick Discussion</Text>
-                <Text style={styles.modalSub}>
-                  Share a thought with the Writha community
-                </Text>
-              </View>
-              <TouchableOpacity onPress={() => setShowDiscModal(false)}>
-                <Ionicons name="close-circle" size={28} color={THEME.textMuted} />
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.modalUserRow}>
-              {userPhoto ? (
-                <Image source={{ uri: userPhoto }} style={styles.modalAvatar} />
-              ) : (
-                <View style={[styles.modalAvatar, styles.modalAvatarFallback]}>
-                  <Text style={{ color: THEME.accent, fontWeight: "900" }}>
-                    {displayName ? displayName[0].toUpperCase() : "W"}
-                  </Text>
-                </View>
-              )}
-              <Text style={styles.modalUsername}>{displayName || "Scholar"}</Text>
-            </View>
-
-            <TextInput
-              style={styles.discInput}
-              placeholder="What's on your mind? Start a scholarly debate..."
-              placeholderTextColor={THEME.textMuted}
-              multiline
-              value={newPost}
-              onChangeText={setNewPost}
-              autoFocus
-              maxLength={1000}
-            />
-            <Text style={styles.charCount}>{newPost.length}/1000</Text>
-
-            <View style={styles.webToggleRow}>
-              <View>
-                <Text style={styles.webToggleTitle}>Publish to Web</Text>
-                <Text style={styles.webToggleSub}>
-                  Visible on Writha's public website
-                </Text>
-              </View>
-              <Switch
-                value={publishToWeb}
-                onValueChange={setPublishToWeb}
-                trackColor={{ false: THEME.ui2, true: THEME.purple }}
-                thumbColor={publishToWeb ? THEME.accent : THEME.textMuted}
-              />
-            </View>
-
-            <TouchableOpacity
-              style={[
-                styles.postBtn,
-                (!newPost.trim() || posting) && { opacity: 0.6 },
-              ]}
-              onPress={publishDiscussion}
-              disabled={!newPost.trim() || posting}
-            >
-              {posting ? (
-                <ActivityIndicator color="#000" />
-              ) : (
-                <>
-                  <Ionicons name="send" size={18} color="#000" />
-                  <Text style={styles.postBtnTxt}>POST DISCUSSION</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
     </View>
   );
 }
@@ -945,7 +828,6 @@ const styles = StyleSheet.create({
     flex: 1, backgroundColor: THEME.bg,
     justifyContent: "center", alignItems: "center",
   },
-
   header: {
     paddingTop: 58, paddingHorizontal: 20, paddingBottom: 16,
     flexDirection: "row", justifyContent: "space-between", alignItems: "center",
@@ -961,14 +843,12 @@ const styles = StyleSheet.create({
     width: 12, height: 12, borderRadius: 6,
     backgroundColor: THEME.green, borderWidth: 2, borderColor: THEME.bg,
   },
-
   searchBar: {
     flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui,
     marginHorizontal: 16, marginBottom: 8, borderRadius: 16,
     paddingHorizontal: 14, height: 48, borderWidth: 1, borderColor: THEME.ui2, gap: 10,
   },
   searchInput: { flex: 1, color: THEME.text, fontSize: 14 },
-
   section: { marginTop: 24 },
   sectionHeader: {
     flexDirection: "row", justifyContent: "space-between",
@@ -983,13 +863,11 @@ const styles = StyleSheet.create({
   sectionSubtitle: { color: THEME.textMuted, fontSize: 11, marginTop: 1 },
   seeAllBtn: { flexDirection: "row", alignItems: "center", gap: 3 },
   seeAllTxt: { color: THEME.purpleLight, fontSize: 12, fontWeight: "700" },
-
   emptyCard: {
     marginHorizontal: 16, backgroundColor: THEME.ui, borderRadius: 18,
     padding: 24, alignItems: "center", borderWidth: 1, borderColor: THEME.ui2,
   },
   emptyCardTxt: { color: THEME.textMuted, fontSize: 13, marginTop: 8, textAlign: "center" },
-
   featuredBanner: {
     marginHorizontal: 16, height: 200, borderRadius: 22,
     overflow: "hidden", borderWidth: 1.5, borderColor: THEME.accent,
@@ -1012,7 +890,6 @@ const styles = StyleSheet.create({
     borderRadius: 10, alignSelf: "flex-start", marginTop: 10,
   },
   featuredPriceTxt: { color: "#000", fontSize: 11, fontWeight: "900" },
-
   bookCard: { width: 140 },
   bookCoverFrame: {
     borderRadius: 14, borderWidth: 2, borderColor: THEME.accent,
@@ -1042,7 +919,6 @@ const styles = StyleSheet.create({
     borderRadius: 8, flexDirection: "row", alignItems: "center", gap: 4,
   },
   weaveActionTxt: { color: "#000", fontSize: 10, fontWeight: "900" },
-
   weaveCard: {
     width: 190, backgroundColor: THEME.ui, borderRadius: 18,
     padding: 16, borderWidth: 1, borderColor: THEME.ui2,
@@ -1056,8 +932,6 @@ const styles = StyleSheet.create({
   weaveBook: { color: THEME.textMuted, fontSize: 11, marginTop: 6 },
   weaveFooter: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 12 },
   weaveFooterTxt: { color: THEME.textMuted, fontSize: 11 },
-
-  // Feed cards — horizontal, same size as weave cards
   feedCard: {
     width: 200, backgroundColor: THEME.ui, borderRadius: 18,
     padding: 14, borderWidth: 1, borderColor: THEME.ui2,
@@ -1089,8 +963,6 @@ const styles = StyleSheet.create({
   },
   feedActionBtn: { flexDirection: "row", alignItems: "center", gap: 4 },
   feedActionTxt: { color: THEME.textMuted, fontSize: 10 },
-
-  // Filter pills
   filterRow: {
     flexDirection: "row", paddingHorizontal: 16,
     gap: 8, marginBottom: 12, paddingBottom: 2,
@@ -1102,7 +974,6 @@ const styles = StyleSheet.create({
   filterPillActive: { backgroundColor: THEME.accent, borderColor: THEME.accent },
   filterPillTxt: { color: THEME.textMuted, fontSize: 11, fontWeight: "700" },
   filterPillTxtActive: { color: "#000" },
-
   groupCard: { width: 110, alignItems: "center" },
   groupImgFrame: { position: "relative" },
   groupImg: {
@@ -1122,7 +993,6 @@ const styles = StyleSheet.create({
     textAlign: "center", marginTop: 8,
   },
   groupMembers: { color: THEME.textMuted, fontSize: 9, marginTop: 2 },
-
   clearSearchBtn: {
     flexDirection: "row", alignItems: "center", gap: 6,
     marginHorizontal: 16, marginBottom: 14,
@@ -1138,7 +1008,6 @@ const styles = StyleSheet.create({
   },
   searchResultTypeTxt: { color: THEME.accent, fontSize: 8, fontWeight: "900" },
   searchResultText: { color: THEME.text, fontSize: 13, fontWeight: "700", lineHeight: 19 },
-
   fab: {
     position: "absolute", bottom: 32, right: 22,
     backgroundColor: THEME.accent, width: 60, height: 60, borderRadius: 20,
@@ -1161,49 +1030,4 @@ const styles = StyleSheet.create({
     width: 44, height: 44, borderRadius: 14,
     justifyContent: "center", alignItems: "center",
   },
-
-  modalOverlay: {
-    flex: 1, backgroundColor: "rgba(0,0,0,0.85)", justifyContent: "flex-end",
-  },
-  modalSheet: {
-    backgroundColor: THEME.ui, borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    padding: 24, minHeight: 480, borderWidth: 1, borderColor: THEME.ui2,
-  },
-  modalHandle: {
-    width: 40, height: 4, backgroundColor: THEME.ui2,
-    borderRadius: 2, alignSelf: "center", marginBottom: 20,
-  },
-  modalHeader: {
-    flexDirection: "row", justifyContent: "space-between",
-    alignItems: "flex-start", marginBottom: 20,
-  },
-  modalTitle: { color: THEME.accent, fontSize: 20, fontWeight: "900" },
-  modalSub: { color: THEME.textMuted, fontSize: 12, marginTop: 3 },
-  modalUserRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 16 },
-  modalAvatar: { width: 36, height: 36, borderRadius: 11 },
-  modalAvatarFallback: {
-    backgroundColor: THEME.purple, justifyContent: "center", alignItems: "center",
-  },
-  modalUsername: { color: THEME.text, fontWeight: "800", fontSize: 14 },
-  discInput: {
-    backgroundColor: THEME.bg, color: THEME.text, borderRadius: 16,
-    padding: 16, minHeight: 140, textAlignVertical: "top",
-    fontSize: 15, lineHeight: 22, borderWidth: 1, borderColor: THEME.ui2,
-  },
-  charCount: {
-    color: THEME.textMuted, fontSize: 11, textAlign: "right",
-    marginTop: 6, marginBottom: 16,
-  },
-  webToggleRow: {
-    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
-    backgroundColor: THEME.bg, padding: 14, borderRadius: 14,
-    marginBottom: 20, borderWidth: 1, borderColor: THEME.ui2,
-  },
-  webToggleTitle: { color: THEME.text, fontWeight: "800", fontSize: 14 },
-  webToggleSub: { color: THEME.textMuted, fontSize: 10, marginTop: 2 },
-  postBtn: {
-    backgroundColor: THEME.accent, borderRadius: 18, padding: 18,
-    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
-  },
-  postBtnTxt: { color: "#000", fontWeight: "900", fontSize: 14, letterSpacing: 1 },
 });
