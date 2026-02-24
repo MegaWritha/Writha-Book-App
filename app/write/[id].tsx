@@ -50,6 +50,7 @@ export default function WrithaEditor() {
     title: "",
     subtitle: "",
     cover: "",
+    coverUrl: "",
     coverLocalUri: null as string | null,
     genre: "",
     tags: "",
@@ -222,8 +223,19 @@ export default function WrithaEditor() {
     if (status === "submitted") {
       if (!form.title.trim())
         return Alert.alert("Required", "Add a title.");
-      if (form.mode === "write" && form.content.trim().length < 50)
-        return Alert.alert("Too Short", "Manuscript needs at least 50 characters.");
+      if (form.mode === "write") {
+  const wordCount = form.content.trim().split(/\s+/).filter(Boolean).length;
+  if (wordCount < 500) {
+    return Alert.alert(
+      "Too Short",
+      `Your manuscript is ${wordCount} words. A publishable book should be at least 500 words.`
+    );
+  }
+}
+
+      if (form.mode === "upload" && !form.fileUri && !form.fileUrl) {
+        return Alert.alert("No Manuscript", "Please upload your manuscript file.");
+    }
       if (form.mode === "upload" && !form.fileUri && !form.fileUrl)
         return Alert.alert("Required", "Upload your manuscript file.");
       if (!form.isOriginal)
@@ -236,7 +248,7 @@ export default function WrithaEditor() {
     setLoading(true);
     try {
       // Upload cover if it's a local URI
-      const finalCover = await uploadCover();
+      const finalCover = form.coverLocalUri ? await uploadCover() : form.coverUrl || "";
 
       // Upload manuscript file if local
       const finalFileUrl =
