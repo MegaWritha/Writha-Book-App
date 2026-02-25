@@ -52,25 +52,21 @@ function classifyParagraphs(raw: string): Paragraph[] {
     const line = lines[i];
     const trimmed = line.trim();
 
-    // Blank / separator
-    if (!trimmed || trimmed === "" ) {
+    if (!trimmed || trimmed === "") {
       result.push({ type: "blank", text: "", index: index++ });
       continue;
     }
 
-    // Explicit scene break markers
     if (/^[\*\-_~=#]{3,}$/.test(trimmed) || trimmed === "***" || trimmed === "---") {
       result.push({ type: "section_break", text: trimmed, index: index++ });
       continue;
     }
 
-    // Explicit chapter keywords
     if (/^(chapter|prologue|epilogue|part|act|scene|book)\s+[\w\d]+/i.test(trimmed)) {
       result.push({ type: "chapter", text: trimmed, index: index++ });
       continue;
     }
 
-    // ALL CAPS short line = likely chapter/heading (max 60 chars)
     if (
       trimmed === trimmed.toUpperCase() &&
       trimmed.length <= 60 &&
@@ -81,20 +77,12 @@ function classifyParagraphs(raw: string): Paragraph[] {
       continue;
     }
 
-    // Short line that looks like a title (Title Case, under 50 chars, no period at end)
     const words = trimmed.split(" ");
-    const isTitleCase = words.every(
-      (w) => !w[0] || w[0] === w[0].toUpperCase()
-    );
+    const isTitleCase = words.every((w) => !w[0] || w[0] === w[0].toUpperCase());
     if (
-      isTitleCase &&
-      trimmed.length < 50 &&
-      !trimmed.endsWith(".") &&
-      !trimmed.endsWith(",") &&
-      words.length <= 8 &&
-      words.length >= 1
+      isTitleCase && trimmed.length < 50 && !trimmed.endsWith(".") &&
+      !trimmed.endsWith(",") && words.length <= 8 && words.length >= 1
     ) {
-      // Only treat as sub_heading if surrounded by blank lines
       const prevBlank = i === 0 || lines[i - 1].trim() === "";
       const nextBlank = i === lines.length - 1 || lines[i + 1].trim() === "";
       if (prevBlank && nextBlank) {
@@ -109,18 +97,16 @@ function classifyParagraphs(raw: string): Paragraph[] {
   return result;
 }
 
-// ── SPLIT INTO PAGES AT PARAGRAPH BOUNDARIES ─────────────────────────────
+// ── SPLIT INTO PAGES ─────────────────────────────────────────────────────
 function buildPages(paragraphs: Paragraph[], linesPerPage = 18): Paragraph[][] {
   const pages: Paragraph[][] = [];
   let current: Paragraph[] = [];
   let lineCount = 0;
 
   for (const p of paragraphs) {
-    if (p.type === "blank") continue; // skip blanks when paging
-
+    if (p.type === "blank") continue;
     const weight = p.type === "chapter" ? 6 : p.type === "sub_heading" ? 3 : 2;
 
-    // Start new page on chapter break if we already have content
     if (p.type === "chapter" && current.length > 0) {
       pages.push(current);
       current = [];
@@ -171,23 +157,22 @@ export default function ReaderScreen() {
   const [selectedVoice, setSelectedVoice] = useState<string | undefined>(undefined);
   const [showVoicePanel, setShowVoicePanel] = useState(false);
   const [speechRate, setSpeechRate] = useState(0.9);
+  // ✅ FIX: Track scroll page number for scroll mode
+  const [scrollPageNum, setScrollPageNum] = useState(1);
 
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const controlsVisible = useRef(true);
 
   const currentFont = FONTS.find((f) => f.key === fontKey) || FONTS[0];
+  // ✅ FIX: Calculate total pages for scroll mode based on content
+  const totalScrollPages = useMemo(() => Math.max(1, pages.length), [pages]);
 
   // ── LOAD VOICES ────────────────────────────────────────────────────
   useEffect(() => {
     Speech.getAvailableVoicesAsync().then((voices) => {
-      // Filter to English voices only and deduplicate by name
-      const english = voices.filter((v) =>
-        v.language?.startsWith("en") || !v.language
-      );
+      const english = voices.filter((v) => v.language?.startsWith("en") || !v.language);
       setAvailableVoices(english);
-      if (english.length > 0 && !selectedVoice) {
-        setSelectedVoice(english[0].identifier);
-      }
+      if (english.length > 0 && !selectedVoice) setSelectedVoice(english[0].identifier);
     }).catch(() => {});
   }, []);
 
@@ -269,8 +254,11 @@ export default function ReaderScreen() {
     const raw = (contentOffset.y / (contentSize.height - layoutMeasurement.height)) * 100;
     const p = Math.max(0, Math.min(100, raw));
     setProgress(p);
+    // ✅ FIX: Calculate current page number from scroll position
+    const estimatedPage = Math.max(1, Math.ceil((p / 100) * totalScrollPages));
+    setScrollPageNum(estimatedPage);
     if (p >= 90) markBookRead();
-  }, [markBookRead]);
+  }, [markBookRead, totalScrollPages]);
 
   // ── PAGE CHANGE ────────────────────────────────────────────────────
   const handlePageChange = useCallback((index: number) => {
@@ -287,16 +275,12 @@ export default function ReaderScreen() {
       setIsSpeaking(false);
     } else {
       setIsSpeaking(true);
-      // In swipe mode read current page, in scroll mode read first 3000 chars
       let text = "";
       if (readingMode === "swipe" && pages[currentPage]) {
-        text = pages[currentPage]
-          .map((p) => p.text)
-          .join(" ");
+        text = pages[currentPage].map((p) => p.text).join(" ");
       } else {
         text = book?.content?.substring(0, 3000) || "";
       }
-
       Speech.speak(text, {
         voice: selectedVoice,
         rate: speechRate,
@@ -314,20 +298,17 @@ export default function ReaderScreen() {
     if (p.type === "chapter") {
       return (
         <View key={key} style={styles.chapterBreakWrapper}>
-          {/* Decorative line above */}
           <View style={[styles.chapterLineTop, { backgroundColor: theme.accent + "60" }]} />
           <View style={styles.chapterInner}>
             <Text style={[styles.chapterOrnament, { color: theme.accent }]}>✦</Text>
             <Text style={[styles.chapterHeading, {
-              color: theme.accent,
-              fontFamily,
+              color: theme.accent, fontFamily,
               letterSpacing: p.text.length < 20 ? 6 : 2,
             }]}>
               {p.text.toUpperCase()}
             </Text>
             <View style={[styles.chapterDivider, { backgroundColor: theme.accent }]} />
           </View>
-          {/* Extra space after chapter heading */}
           <View style={{ height: 32 }} />
         </View>
       );
@@ -336,8 +317,7 @@ export default function ReaderScreen() {
     if (p.type === "sub_heading") {
       return (
         <Text key={key} style={[styles.subHeading, {
-          color: theme.accent, fontFamily,
-          fontSize: fontSize + 2,
+          color: theme.accent, fontFamily, fontSize: fontSize + 2,
         }]}>
           {p.text}
         </Text>
@@ -347,23 +327,18 @@ export default function ReaderScreen() {
     if (p.type === "section_break") {
       return (
         <View key={key} style={styles.sectionBreak}>
-          <Text style={[styles.sectionBreakText, { color: theme.text + "50" }]}>
-            ✦ ✦ ✦
-          </Text>
+          <Text style={[styles.sectionBreakText, { color: theme.text + "50" }]}>✦ ✦ ✦</Text>
         </View>
       );
     }
 
-    // Body paragraph — first-line indent like a real book
     return (
       <Text key={key} style={[styles.bodyParagraph, {
-        color: theme.text,
-        fontSize,
+        color: theme.text, fontSize,
         textAlign: alignment,
         lineHeight: fontSize * lineSpacing,
         fontFamily,
       }]}>
-        {/* First-line indent using unicode em space */}
         {"      "}{p.text}
       </Text>
     );
@@ -375,21 +350,21 @@ export default function ReaderScreen() {
       style={[styles.swipePage, { backgroundColor: theme.bg }]}
       onPress={toggleControls}
     >
-      {/* Chapter start indicator at top of page if first item is chapter */}
       {item[0]?.type === "chapter" && (
         <View style={[styles.pageChapterTag, { borderColor: theme.accent + "40" }]}>
-          <Text style={[styles.pageChapterTagTxt, { color: theme.accent }]}>
-            NEW CHAPTER
-          </Text>
+          <Text style={[styles.pageChapterTagTxt, { color: theme.accent }]}>NEW CHAPTER</Text>
         </View>
       )}
 
-      {item.map((p, i) => renderParagraph(p, `pg${index}-p${i}`))}
+      {/* ✅ FIX: Content area with proper bottom padding so last line is visible */}
+      <View style={styles.swipeContent}>
+        {item.map((p, i) => renderParagraph(p, `pg${index}-p${i}`))}
+      </View>
 
-      {/* Page number at bottom */}
-      <View style={styles.pageNumRow}>
+      {/* ✅ FIX: Page number pinned at bottom, always visible */}
+      <View style={[styles.pageNumRow, { borderTopColor: theme.accent + "20" }]}>
         <View style={[styles.pageNumLine, { backgroundColor: theme.accent + "30" }]} />
-        <Text style={[styles.pageNumTxt, { color: theme.accent + "80" }]}>
+        <Text style={[styles.pageNumTxt, { color: theme.accent }]}>
           {index + 1} / {pages.length}
         </Text>
         <View style={[styles.pageNumLine, { backgroundColor: theme.accent + "30" }]} />
@@ -431,21 +406,18 @@ export default function ReaderScreen() {
 
       {/* ── PROGRESS BAR ── */}
       <View style={[styles.progressTrack, { top: showControls ? 95 : 0 }]}>
-        <View style={[styles.progressFill, {
-          width: `${progress}%`,
-          backgroundColor: theme.accent,
-        }]} />
+        <View style={[styles.progressFill, { width: `${progress}%`, backgroundColor: theme.accent }]} />
       </View>
 
       {/* ── READING CONTENT ── */}
       {readingMode === "scroll" ? (
         <ScrollView
           style={{ flex: 1 }}
+          // ✅ FIX: paddingBottom increased so last line never hides behind bottom panel
           contentContainerStyle={[styles.scrollContent, { paddingTop: 110 }]}
           onScroll={handleScrollProgress}
           scrollEventThrottle={32}
           showsVerticalScrollIndicator={false}
-          // Allow tapping anywhere to toggle controls
           onTouchEnd={toggleControls}
         >
           {/* Book header */}
@@ -461,15 +433,24 @@ export default function ReaderScreen() {
             <Text style={[styles.heroAuthor, { color: theme.text + "70" }]}>
               by {book?.displayAuthor}
             </Text>
-            {/* Opening ornament */}
             <View style={[styles.openingOrnament, { backgroundColor: theme.accent + "40" }]} />
           </View>
 
           {paragraphs.map((p, i) => renderParagraph(p, `line-${i}`))}
-          <View style={{ height: 300 }} />
+
+          {/* ✅ FIX: Page number shown at bottom of scroll mode too */}
+          <View style={[styles.scrollPageNumRow, { borderTopColor: theme.accent + "20" }]}>
+            <View style={[styles.pageNumLine, { backgroundColor: theme.accent + "30" }]} />
+            <Text style={[styles.pageNumTxt, { color: theme.accent }]}>
+              Page {scrollPageNum} of {totalScrollPages}
+            </Text>
+            <View style={[styles.pageNumLine, { backgroundColor: theme.accent + "30" }]} />
+          </View>
+
+          {/* ✅ FIX: Extra space at bottom so last line clears the bottom panel */}
+          <View style={{ height: 220 }} />
         </ScrollView>
       ) : (
-        // ── SWIPE MODE ──
         <FlatList
           ref={flatListRef}
           data={pages}
@@ -489,7 +470,6 @@ export default function ReaderScreen() {
           decelerationRate="fast"
           snapToInterval={width}
           snapToAlignment="start"
-          // FIX: don't intercept touch events from the tap zone
           scrollEnabled
         />
       )}
@@ -568,16 +548,11 @@ export default function ReaderScreen() {
             ))}
           </View>
 
-          {/* Line spacing */}
           <TouchableOpacity
             style={[styles.sizeBtn, { backgroundColor: theme.bg }]}
             onPress={() => setLineSpacing((s) => s >= 2.5 ? 1.5 : s + 0.25)}
           >
-            <MaterialCommunityIcons
-              name="format-line-spacing"
-              size={18}
-              color={theme.accent}
-            />
+            <MaterialCommunityIcons name="format-line-spacing" size={18} color={theme.accent} />
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -621,7 +596,6 @@ export default function ReaderScreen() {
             <View style={styles.modalHandle} />
             <Text style={[styles.modalTitle, { color: theme.accent }]}>FONT & STYLE</Text>
 
-            {/* Typeface options */}
             <Text style={[styles.modalSection, { color: theme.uiText }]}>TYPEFACE</Text>
             <View style={styles.fontGrid}>
               {FONTS.map((f) => (
@@ -649,7 +623,6 @@ export default function ReaderScreen() {
               ))}
             </View>
 
-            {/* Font size slider row */}
             <Text style={[styles.modalSection, { color: theme.uiText }]}>SIZE — {fontSize}pt</Text>
             <View style={styles.sizeRow}>
               {[12, 14, 16, 18, 20, 22, 24, 26, 28].map((s) => (
@@ -668,7 +641,6 @@ export default function ReaderScreen() {
               ))}
             </View>
 
-            {/* Line spacing */}
             <Text style={[styles.modalSection, { color: theme.uiText }]}>LINE SPACING</Text>
             <View style={styles.sizeRow}>
               {[1.5, 1.75, 2.0, 2.25, 2.5].map((s) => (
@@ -688,7 +660,6 @@ export default function ReaderScreen() {
               ))}
             </View>
 
-            {/* Preview */}
             <View style={[styles.fontPreviewBox, { backgroundColor: theme.bg }]}>
               <Text style={[styles.fontPreviewTxt, {
                 color: theme.text, fontSize,
@@ -718,21 +689,16 @@ export default function ReaderScreen() {
             <View style={styles.modalHandle} />
             <Text style={[styles.modalTitle, { color: theme.accent }]}>VOICE READER</Text>
 
-            {/* Play/Stop */}
             <TouchableOpacity
               style={[styles.voicePlayBtn, { backgroundColor: isSpeaking ? "#FF4444" : theme.accent }]}
               onPress={() => { toggleSpeech(); }}
             >
-              <FontAwesome5
-                name={isSpeaking ? "stop-circle" : "play-circle"}
-                size={22} color="#000"
-              />
+              <FontAwesome5 name={isSpeaking ? "stop-circle" : "play-circle"} size={22} color="#000" />
               <Text style={styles.voicePlayBtnTxt}>
                 {isSpeaking ? "STOP READING" : "START READING"}
               </Text>
             </TouchableOpacity>
 
-            {/* Speed */}
             <Text style={[styles.modalSection, { color: theme.uiText }]}>READING SPEED</Text>
             <View style={styles.sizeRow}>
               {[
@@ -757,7 +723,6 @@ export default function ReaderScreen() {
               ))}
             </View>
 
-            {/* Voice selection */}
             {availableVoices.length > 1 && (
               <>
                 <Text style={[styles.modalSection, { color: theme.uiText }]}>
@@ -793,14 +758,11 @@ export default function ReaderScreen() {
                         onPress={() => {
                           Speech.stop();
                           Speech.speak("Hello, I will be reading this book for you.", {
-                            voice: v.identifier,
-                            rate: speechRate,
+                            voice: v.identifier, rate: speechRate,
                           });
                         }}
                       >
-                        <Text style={[styles.voicePreviewBtn, { color: theme.accent }]}>
-                          Preview
-                        </Text>
+                        <Text style={[styles.voicePreviewBtn, { color: theme.accent }]}>Preview</Text>
                       </TouchableOpacity>
                     </TouchableOpacity>
                   ))}
@@ -817,7 +779,6 @@ export default function ReaderScreen() {
           </View>
         </Pressable>
       </Modal>
-
     </View>
   );
 }
@@ -844,7 +805,8 @@ const styles = StyleSheet.create({
   },
   progressFill: { height: "100%" },
 
-  scrollContent: { paddingHorizontal: 26, paddingBottom: 120 },
+  // ✅ FIX: paddingBottom is now 240 to clear the bottom panel fully
+  scrollContent: { paddingHorizontal: 26, paddingBottom: 240 },
 
   bookHeader: { alignItems: "center", paddingVertical: 60, paddingBottom: 50 },
   heroCover: {
@@ -859,10 +821,8 @@ const styles = StyleSheet.create({
   heroAuthor: { fontSize: 12, letterSpacing: 3, textAlign: "center" },
   openingOrnament: { width: 60, height: 1, marginTop: 32, borderRadius: 1 },
 
-  // Body text — first-line indent via leading spaces in renderParagraph
   bodyParagraph: { marginBottom: 20 },
 
-  // Chapter break — full ceremony
   chapterBreakWrapper: { marginTop: 60, marginBottom: 10, alignItems: "center" },
   chapterLineTop: { width: "40%", height: 1, marginBottom: 28 },
   chapterInner: { alignItems: "center", gap: 12 },
@@ -881,27 +841,41 @@ const styles = StyleSheet.create({
   sectionBreak: { alignItems: "center", marginVertical: 36 },
   sectionBreakText: { fontSize: 16, letterSpacing: 8 },
 
-  // Swipe mode
+  // ✅ FIX: swipePage uses flex layout so page number stays at bottom
   swipePage: {
     width,
     flex: 1,
     paddingHorizontal: 26,
     paddingTop: 70,
-    paddingBottom: 200,
+    paddingBottom: 0,
+  },
+  // ✅ FIX: content area grows to fill space, pushes page number down
+  swipeContent: {
+    flex: 1,
+    paddingBottom: 16,
   },
   pageChapterTag: {
     alignSelf: "center", marginBottom: 24, paddingHorizontal: 16,
     paddingVertical: 6, borderWidth: 1, borderRadius: 20,
   },
   pageChapterTagTxt: { fontSize: 9, fontWeight: "900", letterSpacing: 3 },
+
+  // ✅ FIX: page number row properly visible with border and padding
   pageNumRow: {
     flexDirection: "row", alignItems: "center", gap: 10,
-    marginTop: 30, paddingTop: 16,
+    paddingVertical: 14, paddingHorizontal: 4,
+    borderTopWidth: 1,
+    marginBottom: Platform.OS === "ios" ? 100 : 80,
+  },
+  // ✅ FIX: scroll mode page number at bottom of content
+  scrollPageNumRow: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    paddingVertical: 20, paddingHorizontal: 4,
+    borderTopWidth: 1, marginTop: 20,
   },
   pageNumLine: { flex: 1, height: 1 },
-  pageNumTxt: { fontSize: 9, fontWeight: "900", letterSpacing: 2 },
+  pageNumTxt: { fontSize: 10, fontWeight: "900", letterSpacing: 2 },
 
-  // Bottom panel
   bottomPanel: {
     position: "absolute", bottom: 0, left: 0, right: 0,
     paddingBottom: Platform.OS === "ios" ? 34 : 20,
@@ -936,64 +910,31 @@ const styles = StyleSheet.create({
   },
   weaveBtnText: { color: "#000", fontWeight: "900", fontSize: 10, letterSpacing: 1.5 },
 
-  // Modals
-  modalBackdrop: {
-    flex: 1, backgroundColor: "rgba(0,0,0,0.6)",
-    justifyContent: "flex-end",
-  },
-  modalSheet: {
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    padding: 24, paddingBottom: Platform.OS === "ios" ? 40 : 24,
-  },
-  modalHandle: {
-    width: 40, height: 4, borderRadius: 2,
-    backgroundColor: "rgba(255,255,255,0.2)",
-    alignSelf: "center", marginBottom: 20,
-  },
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "flex-end" },
+  modalSheet: { borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24, paddingBottom: Platform.OS === "ios" ? 40 : 24 },
+  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: "rgba(255,255,255,0.2)", alignSelf: "center", marginBottom: 20 },
   modalTitle: { fontSize: 14, fontWeight: "900", letterSpacing: 3, marginBottom: 20 },
   modalSection: { fontSize: 9, fontWeight: "900", letterSpacing: 2, marginBottom: 10, marginTop: 16 },
 
-  // Font panel
   fontGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  fontPill: {
-    paddingHorizontal: 16, paddingVertical: 12, borderRadius: 14,
-    borderWidth: 1, minWidth: (width - 80) / 2 - 5, alignItems: "center",
-  },
+  fontPill: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 14, borderWidth: 1, minWidth: (width - 80) / 2 - 5, alignItems: "center" },
   fontPillTxt: { fontSize: 14, fontWeight: "700" },
   fontPillPreview: { fontSize: 11, marginTop: 4 },
 
   sizeRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  sizePill: {
-    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
-    borderWidth: 1, alignItems: "center",
-  },
+  sizePill: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1, alignItems: "center" },
   sizePillTxt: { fontSize: 11, fontWeight: "700" },
 
-  fontPreviewBox: {
-    borderRadius: 14, padding: 18, marginTop: 20, marginBottom: 20,
-    minHeight: 80,
-  },
+  fontPreviewBox: { borderRadius: 14, padding: 18, marginTop: 20, marginBottom: 20, minHeight: 80 },
   fontPreviewTxt: { lineHeight: 26 },
 
-  doneBtn: {
-    borderRadius: 16, padding: 16, alignItems: "center",
-  },
+  doneBtn: { borderRadius: 16, padding: 16, alignItems: "center" },
   doneBtnTxt: { color: "#000", fontWeight: "900", fontSize: 13, letterSpacing: 2 },
 
-  // Voice panel
-  voicePlayBtn: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center",
-    gap: 10, padding: 16, borderRadius: 16, marginBottom: 4,
-  },
+  voicePlayBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, padding: 16, borderRadius: 16, marginBottom: 4 },
   voicePlayBtnTxt: { color: "#000", fontWeight: "900", fontSize: 14 },
-  voiceRow: {
-    flexDirection: "row", alignItems: "center", gap: 12,
-    padding: 12, borderRadius: 12, marginBottom: 6, borderWidth: 1,
-  },
-  voiceCheck: {
-    width: 20, height: 20, borderRadius: 10, borderWidth: 1.5,
-    justifyContent: "center", alignItems: "center",
-  },
+  voiceRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 12, borderRadius: 12, marginBottom: 6, borderWidth: 1 },
+  voiceCheck: { width: 20, height: 20, borderRadius: 10, borderWidth: 1.5, justifyContent: "center", alignItems: "center" },
   voiceName: { fontSize: 13, fontWeight: "700" },
   voiceLang: { fontSize: 10, marginTop: 2 },
   voicePreviewBtn: { fontSize: 11, fontWeight: "700" },
