@@ -823,7 +823,7 @@ const styles = StyleSheet.create({
 
   bodyParagraph: { marginBottom: 20 },
 
-  chapterBreakWrapper: { marginTop: 60, marginBottom: 10, alignItems: "center" },
+  chapterBreakWrapper: { marginTop: 20, marginBottom: 10, alignItems: "center" },
   chapterLineTop: { width: "40%", height: 1, marginBottom: 28 },
   chapterInner: { alignItems: "center", gap: 12 },
   chapterOrnament: { fontSize: 18, opacity: 0.8 },
@@ -844,9 +844,9 @@ const styles = StyleSheet.create({
   // ✅ FIX: swipePage uses flex layout so page number stays at bottom
   swipePage: {
     width,
-    flex: 1,
+    height: height - 180,
     paddingHorizontal: 26,
-    paddingTop: 70,
+    paddingTop: 20,
     paddingBottom: 0,
   },
   // ✅ FIX: content area grows to fill space, pushes page number down
@@ -865,7 +865,7 @@ const styles = StyleSheet.create({
     flexDirection: "row", alignItems: "center", gap: 10,
     paddingVertical: 14, paddingHorizontal: 4,
     borderTopWidth: 1,
-    marginBottom: Platform.OS === "ios" ? 100 : 80,
+    marginBottom: 0,
   },
   // ✅ FIX: scroll mode page number at bottom of content
   scrollPageNumRow: {
