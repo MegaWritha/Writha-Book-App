@@ -844,15 +844,14 @@ const styles = StyleSheet.create({
   // ✅ FIX: swipePage uses flex layout so page number stays at bottom
   swipePage: {
     width,
-    height: height - 180,
+    height: height,
     paddingHorizontal: 26,
-    paddingTop: 20,
-    paddingBottom: 0,
+    paddingTop: 70,
+    paddingBottom: 180,
   },
   // ✅ FIX: content area grows to fill space, pushes page number down
   swipeContent: {
-    flex: 1,
-    paddingBottom: 16,
+    flexGrow: 1,
   },
   pageChapterTag: {
     alignSelf: "center", marginBottom: 24, paddingHorizontal: 16,
@@ -864,8 +863,8 @@ const styles = StyleSheet.create({
   pageNumRow: {
     flexDirection: "row", alignItems: "center", gap: 10,
     paddingVertical: 14, paddingHorizontal: 4,
-    borderTopWidth: 1,
-    marginBottom: 0,
+    borderTopWidth: 1, borderTopColor: "rgba(255,215,0,0.2)",
+    position: "absolute", bottom: 190, left: 26, right: 26,
   },
   // ✅ FIX: scroll mode page number at bottom of content
   scrollPageNumRow: {
