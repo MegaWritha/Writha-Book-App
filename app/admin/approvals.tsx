@@ -108,13 +108,19 @@ export default function ApprovalsScreen() {
         {
           text: "Publish",
           onPress: async () => {
+            try{
             await updateDoc(doc(db, collectionName, itemId), {
               status: "published",
               approvedAt: serverTimestamp(),
+              isPublished: true,
             });
+            Alert.alert("✅ Published", `"${title}" is now live.`);
+          } catch (e: any) {
+            Alert.alert("Error", "Could not approve. Check Firestore rules. \n\n" + e.message);
           }
-        }
-      ]
+        },
+      },
+    ] 
     );
   };
 
@@ -122,7 +128,7 @@ export default function ApprovalsScreen() {
   const handleReject = (itemId: string, title: string) => {
     const collectionName = contentType === "books" ? "books" : "feed";
     Alert.alert(
-      "Reject",
+      "Reject Submission",
       `Reject "${title}"? The author will be notified.`,
       [
         { text: "Cancel", style: "cancel" },
@@ -130,13 +136,19 @@ export default function ApprovalsScreen() {
           text: "Reject",
           style: "destructive",
           onPress: async () => {
+            try {
             await updateDoc(doc(db, collectionName, itemId), {
               status: "rejected",
               rejectedAt: serverTimestamp(),
+              isPublished: false,
             });
+            Alert.alert("❌ Rejected", `"${title}" has been rejected.`);
+          } catch (e: any) {
+            Alert.alert("Error", "Could not reject. Check Firestore rules. \n\n" + e.message);
           }
-        }
-      ]
+        },
+      },
+    ]
     );
   };
 
