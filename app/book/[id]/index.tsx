@@ -147,7 +147,7 @@ export default function BookIndex() {
         {/* PRIMARY ACTIONS */}
         <TouchableOpacity 
           style={styles.readBtn} 
-          onPress={() => router.push({ pathname: "/book/[id]/reader", params: { id: bookId } })}
+          onPress={() => router.push({ pathname: "/book/[id]/read", params: { id: bookId } })}
         >
           <Text style={styles.readTxt}>START READING</Text>
         </TouchableOpacity>

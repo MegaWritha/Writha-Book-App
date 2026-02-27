@@ -5,10 +5,12 @@ import {
   Platform, Image, Easing, FlatList, Pressable,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Ionicons, MaterialCommunityIcons, FontAwesome5, Feather } from "@expo/vector-icons";
-import { GestureDetector, Gesture, GestureHandlerRootView } from "react-native-gesture-handler";
+import {
+  Ionicons, MaterialCommunityIcons,
+  FontAwesome5, Feather,
+} from "@expo/vector-icons";
 
-import { THEMES, Paragraph } from "./types";
+import { THEMES, Paragraph, formatReadingTime, estimateReadingTime } from "./types";
 import { useReaderSettings }  from "./hooks/useReaderSettings";
 import { useReaderBook }      from "./hooks/useReaderBook";
 import { useReaderProgress }  from "./hooks/useReaderProgress";
@@ -19,291 +21,382 @@ import FontPanel              from "./components/FontPanel";
 import VoicePanel             from "./components/VoicePanel";
 import BookmarksPanel         from "./components/BookmarksPanel";
 
-const { width } = Dimensions.get("window");
+const { width, height } = Dimensions.get("window");
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ERROR BOUNDARY — catches crashes and shows a recovery screen
-// instead of a blank white crash
-// ─────────────────────────────────────────────────────────────────────────────
-interface ErrorBoundaryState { hasError: boolean; }
-class ReaderErrorBoundary extends React.Component<
-  { children: React.ReactNode; onBack: () => void },
-  ErrorBoundaryState
-> {
-  state: ErrorBoundaryState = { hasError: false };
-  static getDerivedStateFromError(): ErrorBoundaryState {
-    return { hasError: true };
-  }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <View style={eb.screen}>
-          <MaterialCommunityIcons name="book-off-outline" size={52} color="#FFD700" />
-          <Text style={eb.title}>Something went wrong</Text>
-          <Text style={eb.sub}>The reader ran into an unexpected error.</Text>
-          <TouchableOpacity style={eb.btn} onPress={this.props.onBack}>
-            <Text style={eb.btnTxt}>GO BACK</Text>
-          </TouchableOpacity>
-        </View>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-const eb = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#0F071A", justifyContent: "center", alignItems: "center", padding: 32 },
-  title:  { color: "#FFD700", fontSize: 18, fontWeight: "900", marginTop: 20, letterSpacing: 2 },
-  sub:    { color: "#A78BFA", fontSize: 13, textAlign: "center", marginTop: 10, lineHeight: 20 },
-  btn:    { marginTop: 32, backgroundColor: "#FFD700", paddingHorizontal: 28, paddingVertical: 14, borderRadius: 14 },
-  btnTxt: { color: "#000", fontWeight: "900", fontSize: 13, letterSpacing: 2 },
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MAIN EXPORT — wraps the inner screen in the error boundary
-// ─────────────────────────────────────────────────────────────────────────────
 export default function ReaderScreen() {
-  const router = useRouter();
-  return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <ReaderErrorBoundary onBack={() => router.back()}>
-        <ReaderInner />
-      </ReaderErrorBoundary>
-    </GestureHandlerRootView>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// INNER SCREEN — all logic lives here, wrapped by the boundary above
-// ─────────────────────────────────────────────────────────────────────────────
-function ReaderInner() {
-  const { id, mode } = useLocalSearchParams();
-  const router       = useRouter();
-  const flatListRef  = useRef<FlatList>(null);
+  const { id, mode }  = useLocalSearchParams();
+  const router        = useRouter();
+  const flatListRef   = useRef<FlatList>(null);
+  const scrollRef     = useRef<ScrollView>(null);
 
   const bookId        = useMemo(() => (Array.isArray(id) ? id[0] : id) as string, [id]);
   const isOfflineMode = mode === "offline";
 
+  // ── HOOKS ─────────────────────────────────────────────────────────
   const settings = useReaderSettings();
-  const { book, paragraphs, pages, loading } = useReaderBook(bookId, isOfflineMode);
-  const prog     = useReaderProgress(bookId, pages.length);
-  const speech   = useReaderSpeech(pages, prog.currentPage);
-  const bm       = useBookmarks(bookId, prog.currentPage, pages);
 
+  const { book, paragraphs, pages, chapterMap, loading, error, estimatedMinutes, recordView } =
+    useReaderBook(bookId, isOfflineMode, settings.fontSize, settings.margins);
+
+  const prog  = useReaderProgress(bookId, pages.length);
+  const speech = useReaderSpeech(pages, prog.currentPage);
+  const bm    = useBookmarks(bookId, prog.currentPage, pages);
+
+  // ── LOCAL STATE ───────────────────────────────────────────────────
   const [readingMode,    setReadingMode]    = useState<"scroll" | "swipe">("scroll");
   const [showControls,   setShowControls]   = useState(true);
   const [showFontPanel,  setShowFontPanel]  = useState(false);
   const [showVoicePanel, setShowVoicePanel] = useState(false);
   const [showBookmarks,  setShowBookmarks]  = useState(false);
-  const [bottomH,        setBottomH]        = useState(200);
+  const [showChapters,   setShowChapters]   = useState(false);
+  const [bottomH,        setBottomH]        = useState(180);
+  const [showResumeBar,  setShowResumeBar]  = useState(false);
 
   const fadeAnim        = useRef(new Animated.Value(1)).current;
   const controlsVisible = useRef(true);
+  const scrollMovedRef  = useRef(false);
+  const lastTapRef      = useRef(0);
+  const hasRecordedView = useRef(false);
 
-  // ── Controls toggle ───────────────────────────────────────────────────────
+  const T = settings.theme;
+
+  // ── RECORD VIEW ONCE LOADED ───────────────────────────────────────
+  useEffect(() => {
+    if (book && !hasRecordedView.current) {
+      hasRecordedView.current = true;
+      recordView();
+    }
+  }, [book, recordView]);
+
+  // ── SHOW RESUME BAR IF SAVED POSITION EXISTS ─────────────────────
+  useEffect(() => {
+    if (prog.savedPage !== null && prog.savedPage > 0) {
+      setShowResumeBar(true);
+      // Auto hide after 6 seconds
+      const timer = setTimeout(() => setShowResumeBar(false), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [prog.savedPage]);
+
+  // ── RESTORE SAVED POSITION IN SWIPE MODE ─────────────────────────
+  useEffect(() => {
+    if (prog.savedPage === null || pages.length === 0 || readingMode !== "swipe") return;
+    setTimeout(() => {
+      flatListRef.current?.scrollToIndex({
+        index:    Math.min(prog.savedPage!, pages.length - 1),
+        animated: false,
+      });
+    }, 300);
+  }, [prog.savedPage, pages.length, readingMode]);
+
+  // ── TOGGLE CONTROLS ───────────────────────────────────────────────
   const toggleControls = useCallback(() => {
     const next = !controlsVisible.current;
     controlsVisible.current = next;
     Animated.timing(fadeAnim, {
-      toValue: next ? 1 : 0,
-      duration: 250,
-      easing: Easing.ease,
+      toValue:  next ? 1 : 0,
+      duration: 220,
+      easing:   Easing.ease,
       useNativeDriver: true,
     }).start();
     setShowControls(next);
   }, [fadeAnim]);
 
-  // ── FIX: proper tap detection using Gesture API ───────────────────────────
-  // replaces the fragile onTouchEnd approach that misfired on Android scrolls
-  const tapGesture = Gesture.Tap()
-    .runOnJS(true)
-    .onEnd(() => toggleControls());
-
-  // ── Stop speech when switching pages (FIX: overlap bug) ──────────────────
-  const handlePageChangeSafe = useCallback((index: number) => {
-    speech.stopSpeech();
-    prog.handlePageChange(index);
-  }, [speech, prog]);
-
-  // ── Restore saved position in swipe mode ─────────────────────────────────
-  useEffect(() => {
-    if (prog.savedPage === null || pages.length === 0) return;
-    const target = Math.min(prog.savedPage, pages.length - 1);
-    setTimeout(() => {
-      flatListRef.current?.scrollToIndex({
-        index: target,
-        animated: false,
-      });
-    }, 300);
-  }, [prog.savedPage, pages.length]);
-
-  // ── Safe bookmark navigation with onScrollToIndexFailed guard ─────────────
+  // ── NAVIGATE TO BOOKMARK ──────────────────────────────────────────
   const navigateToBookmark = useCallback((page: number) => {
-    if (readingMode !== "swipe") return;
-    const target = Math.min(page, pages.length - 1);
-    try {
-      flatListRef.current?.scrollToIndex({ index: target, animated: true });
-    } catch {
-      // fallback: scroll to offset directly if index fails
-      flatListRef.current?.scrollToOffset({ offset: target * width, animated: true });
+    if (readingMode === "swipe") {
+      flatListRef.current?.scrollToIndex({
+        index:    Math.min(page, pages.length - 1),
+        animated: true,
+      });
+      prog.handlePageChange(page);
     }
-    prog.handlePageChange(target);
   }, [readingMode, pages.length, prog]);
 
-  // ── Render paragraph ──────────────────────────────────────────────────────
-  const renderParagraph = useCallback((p: Paragraph, key: string) => (
-    <ParagraphRenderer
-          key={key}
-          paragraph={p}
-          uniqueKey={key}
-          theme={settings.theme}
-          fontSize={settings.fontSize}
-          lineSpacing={settings.lineSpacing}
-          alignment={settings.alignment}
-          fontFamily={settings.currentFont.family} paragraphGap={0}    />
-  ), [settings.theme, settings.fontSize, settings.lineSpacing, settings.alignment, settings.currentFont]);
+  // ── NAVIGATE TO CHAPTER ───────────────────────────────────────────
+  const navigateToChapter = useCallback((pageIndex: number) => {
+    if (readingMode === "swipe") {
+      flatListRef.current?.scrollToIndex({
+        index:    Math.min(pageIndex, pages.length - 1),
+        animated: true,
+      });
+      prog.handlePageChange(pageIndex);
+    }
+    setShowChapters(false);
+  }, [readingMode, pages.length, prog]);
 
-  // ── Swipe page renderer ───────────────────────────────────────────────────
-  const renderSwipePage = useCallback(({ item, index }: { item: Paragraph[]; index: number }) => (
-    <Pressable
-      style={[
-        s.swipePage,
-        {
-          backgroundColor: settings.theme.bg,
-          paddingBottom: bottomH + 20,
+  // ── RENDER PARAGRAPH ──────────────────────────────────────────────
+  const renderParagraph = useCallback((p: Paragraph, key: string, pageIndex?: number) => {
+    const isSpeakingThis =
+      speech.isSpeaking &&
+      speech.speakingPage === (pageIndex ?? prog.currentPage);
+
+    return (
+      <ParagraphRenderer
+        key={key}
+        paragraph={p}
+        uniqueKey={key}
+        theme={T}
+        fontSize={settings.fontSize}
+        lineSpacing={settings.lineSpacing}
+        alignment={settings.alignment}
+        fontFamily={settings.currentFont.family}
+        paragraphGap={settings.paragraphGap}
+        isSpeaking={isSpeakingThis}
+      />
+    );
+  }, [
+    T, settings.fontSize, settings.lineSpacing,
+    settings.alignment, settings.currentFont,
+    settings.paragraphGap, speech.isSpeaking,
+    speech.speakingPage, prog.currentPage,
+  ]);
+
+  // ── RENDER SWIPE PAGE ─────────────────────────────────────────────
+  const renderSwipePage = useCallback(({ item, index }: { item: Paragraph[]; index: number }) => {
+    const isBookmarked   = bm.getBookmarkForPage(index);
+    const bmColor        = isBookmarked?.color;
+
+    return (
+      <Pressable
+        style={[s.swipePage, {
+          backgroundColor: T.bg,
+          paddingHorizontal: settings.margins,
+          paddingBottom: bottomH + 24,
           width,
-        },
-      ]}
-      onPress={toggleControls}
-    >
-      {item[0]?.type === "chapter" && (
-        <View style={[s.pageChapterTag, { borderColor: settings.theme.accent + "40" }]}>
-          <Text style={[s.pageChapterTagTxt, { color: settings.theme.accent }]}>
-            NEW CHAPTER
-          </Text>
+        }]}
+        onPress={toggleControls}
+      >
+        {/* Chapter tag */}
+        {item[0]?.type === "chapter" && (
+          <View style={[s.pageChapterTag, { borderColor: T.accent + "40" }]}>
+            <Text style={[s.pageChapterTagTxt, { color: T.accent }]}>
+              NEW CHAPTER
+            </Text>
+          </View>
+        )}
+
+        {/* Bookmark indicator strip */}
+        {isBookmarked && (
+          <View style={[s.bookmarkStrip, { backgroundColor: bmColor || T.accent }]} />
+        )}
+
+        {/* Content */}
+        <View style={{ flex: 1 }}>
+          {item.map((p, i) => renderParagraph(p, `pg${index}-p${i}`, index))}
         </View>
-      )}
 
-      <View style={{ flex: 1 }}>
-        {item.map((p, i) => renderParagraph(p, `pg${index}-p${i}`))}
-      </View>
+        {/* Page number row */}
+        <View style={[s.pageNumRow, { borderTopColor: T.accent + "15" }]}>
+          <View style={[s.pageNumLine, { backgroundColor: T.accent + "20" }]} />
+          <TouchableOpacity onPress={() => bm.toggleBookmark()}>
+            <Ionicons
+              name={isBookmarked ? "bookmark" : "bookmark-outline"}
+              size={14}
+              color={isBookmarked ? (bmColor || T.accent) : T.accent + "60"}
+            />
+          </TouchableOpacity>
+          <Text style={[s.pageNumTxt, { color: T.accent + "90" }]}>
+            {index + 1} / {pages.length}
+          </Text>
+          <View style={[s.pageNumLine, { backgroundColor: T.accent + "20" }]} />
+        </View>
+      </Pressable>
+    );
+  }, [
+    T, settings.margins, pages.length, bottomH,
+    renderParagraph, toggleControls, bm,
+  ]);
 
-      <View style={[s.pageNumRow, { borderTopColor: settings.theme.accent + "20" }]}>
-        <View style={[s.pageNumLine, { backgroundColor: settings.theme.accent + "30" }]} />
-        <Text style={[s.pageNumTxt, { color: settings.theme.accent }]}>
-          {index + 1} / {pages.length}
-        </Text>
-        <View style={[s.pageNumLine, { backgroundColor: settings.theme.accent + "30" }]} />
-      </View>
-    </Pressable>
-  ), [settings.theme, pages.length, renderParagraph, toggleControls, bottomH]);
-
-  // ── Loading screen ────────────────────────────────────────────────────────
+  // ── LOADING STATE ─────────────────────────────────────────────────
   if (loading) {
     return (
-      <View style={[s.loadingScreen, { backgroundColor: settings.theme.bg }]}>
-        <ActivityIndicator size="large" color={settings.theme.accent} />
-        <Text style={[s.loadingText, { color: settings.theme.accent }]}>
+      <View style={[s.loadingScreen, { backgroundColor: T.bg }]}>
+        <ActivityIndicator size="large" color={T.accent} />
+        <Text style={[s.loadingText, { color: T.accent }]}>
           LOADING MANUSCRIPT...
         </Text>
       </View>
     );
   }
 
-  const T = settings.theme;
+  // ── ERROR STATE ───────────────────────────────────────────────────
+  if (error || !book) {
+    return (
+      <View style={[s.loadingScreen, { backgroundColor: T.bg }]}>
+        <MaterialCommunityIcons
+          name="book-remove-outline"
+          size={48}
+          color={T.uiText}
+        />
+        <Text style={[s.errorText, { color: T.text }]}>
+          {error || "Book not found"}
+        </Text>
+        <TouchableOpacity
+          style={[s.errorBtn, { backgroundColor: T.accent }]}
+          onPress={() => router.back()}
+        >
+          <Text style={s.errorBtnTxt}>GO BACK</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
+  // ── MAIN RENDER ───────────────────────────────────────────────────
   return (
     <View style={[s.container, { backgroundColor: T.bg }]}>
       <StatusBar
         hidden={!showControls}
-        barStyle={T.isDark ? "light-content" : "dark-content"}
+        barStyle={T.statusBar}
+        backgroundColor={T.ui}
       />
 
       {/* ── TOP BAR ── */}
-      {/* FIX: pointerEvents moved inside style — deprecated as a prop */}
       <Animated.View
-        style={[
-          s.topBar,
-          { backgroundColor: T.ui, opacity: fadeAnim },
-          { pointerEvents: showControls ? "auto" : "none" },
-        ]}
+        style={[s.topBar, { backgroundColor: T.ui, opacity: fadeAnim }]}
+        pointerEvents={showControls ? "auto" : "none"}
       >
         <TouchableOpacity onPress={() => router.back()} style={s.iconBtn}>
           <Ionicons name="chevron-back" size={26} color={T.accent} />
         </TouchableOpacity>
 
-        <Text style={[s.bookTitle, { color: T.text }]} numberOfLines={1}>
-          {book?.title}
-        </Text>
+        <View style={s.topCenter}>
+          <Text style={[s.bookTitle, { color: T.text }]} numberOfLines={1}>
+            {book.title}
+          </Text>
+          {estimatedMinutes > 0 && (
+            <Text style={[s.bookSubtitle, { color: T.uiText }]}>
+              ~{estimatedMinutes} min read
+            </Text>
+          )}
+        </View>
 
         <View style={s.topRight}>
-          <TouchableOpacity style={s.iconBtn} onPress={() => bm.toggleBookmark()}>
+          <TouchableOpacity
+            style={s.iconBtn}
+            onPress={() => bm.toggleBookmark()}
+          >
             <Ionicons
               name={bm.isCurrentPageBookmarked ? "bookmark" : "bookmark-outline"}
               size={22}
-              color={bm.isCurrentPageBookmarked ? T.accent : T.uiText}
+              color={bm.isCurrentPageBookmarked
+                ? (bm.currentBookmarkColor || T.accent)
+                : T.uiText}
             />
           </TouchableOpacity>
-          {bm.bookmarks.length > 0 && (
-            <TouchableOpacity style={s.iconBtn} onPress={() => setShowBookmarks(true)}>
-              <Ionicons name="bookmarks-outline" size={20} color={T.uiText} />
-            </TouchableOpacity>
-          )}
           <TouchableOpacity
             style={s.iconBtn}
             onPress={() => router.push(`/book/${bookId}/dictionary`)}
           >
-            <MaterialCommunityIcons name="book-alphabet" size={22} color={T.accent} />
+            <MaterialCommunityIcons
+              name="book-alphabet"
+              size={22}
+              color={T.accent}
+            />
           </TouchableOpacity>
         </View>
       </Animated.View>
 
       {/* ── PROGRESS BAR ── */}
       <View style={[s.progressTrack, { top: showControls ? 95 : 0 }]}>
-        <View
-          style={[
-            s.progressFill,
-            // FIX: guard against NaN when progress is 0 or pages is 1
-            { width: `${Math.max(0, Math.min(100, prog.progress))}%`, backgroundColor: T.accent },
-          ]}
-        />
+        <Animated.View style={[s.progressFill, {
+          width: `${prog.progress}%`,
+          backgroundColor: T.accent,
+        }]} />
       </View>
+
+      {/* ── RESUME BAR ── */}
+      {showResumeBar && prog.savedPage !== null && (
+        <Animated.View
+          style={[s.resumeBar, {
+            backgroundColor: T.ui2,
+            top: showControls ? 100 : 6,
+          }]}
+        >
+          <Ionicons name="time-outline" size={14} color={T.accent} />
+          <Text style={[s.resumeBarTxt, { color: T.text }]}>
+            Continue from page {prog.savedPage + 1}?
+          </Text>
+          <TouchableOpacity
+            style={[s.resumeBtn, { backgroundColor: T.accent }]}
+            onPress={() => {
+              navigateToBookmark(prog.savedPage!);
+              setShowResumeBar(false);
+            }}
+          >
+            <Text style={s.resumeBtnTxt}>RESUME</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setShowResumeBar(false)}>
+            <Ionicons name="close" size={16} color={T.uiText} />
+          </TouchableOpacity>
+        </Animated.View>
+      )}
 
       {/* ── CONTENT ── */}
       {readingMode === "scroll" ? (
-        // FIX: GestureDetector replaces fragile onTouchEnd for tap detection
-        <GestureDetector gesture={tapGesture}>
-          <ScrollView
-            style={{ flex: 1 }}
-            contentContainerStyle={[
-              s.scrollContent,
-              { paddingTop: 110, paddingBottom: bottomH + 60 },
-            ]}
-            onScroll={prog.handleScrollProgress}
-            scrollEventThrottle={32}
-            showsVerticalScrollIndicator={false}
-          >
-            {/* Book header */}
-            <View style={s.bookHeader}>
-              {book?.displayCover ? (
-                <Image source={{ uri: book.displayCover }} style={s.heroCover} />
-              ) : (
-                <View style={[s.placeholderCover, { backgroundColor: T.ui }]}>
-                  <MaterialCommunityIcons
-                    name="book-open-page-variant" size={60} color={T.accent}
-                  />
-                </View>
-              )}
-              <Text style={[s.heroTitle, { color: T.text }]}>{book?.title}</Text>
-              <Text style={[s.heroAuthor, { color: T.text + "70" }]}>
-                by {book?.displayAuthor}
+        <ScrollView
+          ref={scrollRef}
+          style={{ flex: 1 }}
+          contentContainerStyle={[s.scrollContent, {
+            paddingTop:        110,
+            paddingBottom:     bottomH + 80,
+            paddingHorizontal: settings.margins,
+          }]}
+          onScroll={prog.handleScrollProgress}
+          scrollEventThrottle={32}
+          showsVerticalScrollIndicator={false}
+          onScrollBeginDrag={() => { scrollMovedRef.current = true; }}
+          onScrollEndDrag={() => {
+            setTimeout(() => { scrollMovedRef.current = false; }, 150);
+          }}
+          onTouchEnd={() => {
+            if (scrollMovedRef.current) return;
+            const now = Date.now();
+            if (now - lastTapRef.current < 300) return;
+            lastTapRef.current = now;
+            toggleControls();
+          }}
+        >
+          {/* Book header */}
+          <View style={s.bookHeader}>
+            {book.displayCover ? (
+              <Image
+                source={{ uri: book.displayCover }}
+                style={s.heroCover}
+                resizeMode="cover"
+              />
+            ) : (
+              <View style={[s.placeholderCover, { backgroundColor: T.ui }]}>
+                <MaterialCommunityIcons
+                  name="book-open-page-variant"
+                  size={60}
+                  color={T.accent}
+                />
+              </View>
+            )}
+            <Text style={[s.heroTitle, { color: T.text }]}>{book.title}</Text>
+            <Text style={[s.heroAuthor, { color: T.uiText }]}>
+              by {book.displayAuthor}
+            </Text>
+            {book.genre ? (
+              <View style={[s.genreTag, { backgroundColor: T.accent + "20", borderColor: T.accent + "40" }]}>
+                <Text style={[s.genreTagTxt, { color: T.accent }]}>
+                  {book.genre.toUpperCase()}
+                </Text>
+              </View>
+            ) : null}
+            {estimatedMinutes > 0 && (
+              <Text style={[s.estimateText, { color: T.uiText }]}>
+                ~{estimatedMinutes} min read
               </Text>
-              <View style={[s.openingLine, { backgroundColor: T.accent + "40" }]} />
-            </View>
+            )}
+            <View style={[s.openingLine, { backgroundColor: T.accent + "40" }]} />
+          </View>
 
-            {paragraphs.map((p, i) => renderParagraph(p, `line-${i}`))}
-          </ScrollView>
-        </GestureDetector>
+          {/* Paragraphs */}
+          {paragraphs.map((p, i) => renderParagraph(p, `line-${i}`))}
+        </ScrollView>
+
       ) : (
         <FlatList
           ref={flatListRef}
@@ -315,8 +408,7 @@ function ReaderInner() {
           showsHorizontalScrollIndicator={false}
           onMomentumScrollEnd={(e) => {
             const index = Math.round(e.nativeEvent.contentOffset.x / width);
-            // FIX: stop speech before changing page to prevent overlap
-            handlePageChangeSafe(index);
+            prog.handlePageChange(index);
           }}
           getItemLayout={(_, index) => ({
             length: width, offset: width * index, index,
@@ -325,24 +417,43 @@ function ReaderInner() {
           decelerationRate="fast"
           snapToInterval={width}
           snapToAlignment="start"
-          // FIX: graceful fallback if index isn't rendered yet
           onScrollToIndexFailed={(info) => {
-            const offset = info.index * width;
-            flatListRef.current?.scrollToOffset({ offset, animated: false });
+            setTimeout(() => {
+              flatListRef.current?.scrollToIndex({
+                index:    Math.min(info.index, pages.length - 1),
+                animated: false,
+              });
+            }, 500);
           }}
+          windowSize={5}
+          maxToRenderPerBatch={3}
+          initialNumToRender={2}
         />
       )}
 
       {/* ── BOTTOM PANEL ── */}
-      {/* FIX: pointerEvents moved inside style */}
       <Animated.View
-        style={[
-          s.bottomPanel,
-          { backgroundColor: T.ui, opacity: fadeAnim },
-          { pointerEvents: showControls ? "auto" : "none" },
-        ]}
+        style={[s.bottomPanel, { backgroundColor: T.ui, opacity: fadeAnim }]}
+        pointerEvents={showControls ? "auto" : "none"}
         onLayout={(e) => setBottomH(e.nativeEvent.layout.height)}
       >
+        {/* Progress info row */}
+        <View style={s.progressInfoRow}>
+          <Text style={[s.progressTxt, { color: T.uiText }]}>
+            {Math.round(prog.progress)}% complete
+          </Text>
+          {readingMode === "swipe" && (
+            <Text style={[s.progressTxt, { color: T.uiText }]}>
+              Page {prog.currentPage + 1} of {pages.length}
+            </Text>
+          )}
+          {prog.readingStats && (
+            <Text style={[s.progressTxt, { color: T.uiText }]}>
+              {formatReadingTime(prog.readingStats.totalTimeRead)} read
+            </Text>
+          )}
+        </View>
+
         {/* Nav tabs */}
         <View style={s.navTabs}>
           <TouchableOpacity
@@ -350,7 +461,7 @@ function ReaderInner() {
             onPress={() => router.push(`/book/${bookId}/findings`)}
           >
             <Feather name="search" size={20} color={T.accent} />
-            <Text style={[s.tabLabel, { color: T.uiText }]}>FINDINGS</Text>
+            <Text style={[s.tabLabel, { color: T.uiText }]}>FIND</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -369,41 +480,78 @@ function ReaderInner() {
 
           <TouchableOpacity
             style={s.tabItem}
-            onPress={() =>
-              router.push({ pathname: "/book/[id]/chapters", params: { id: bookId } })
-            }
+            onPress={() => setShowChapters(true)}
           >
-            <MaterialCommunityIcons name="format-list-bulleted" size={20} color={T.accent} />
+            <MaterialCommunityIcons
+              name="format-list-bulleted"
+              size={20}
+              color={T.accent}
+            />
             <Text style={[s.tabLabel, { color: T.uiText }]}>CHAPTERS</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={s.tabItem} onPress={() => setShowVoicePanel(true)}>
+          <TouchableOpacity
+            style={s.tabItem}
+            onPress={() => {
+              speech.setShowVoicePanel(true);
+              setShowVoicePanel(true);
+            }}
+          >
             <FontAwesome5
               name={speech.isSpeaking ? "stop-circle" : "headphones-alt"}
               size={18}
               color={speech.isSpeaking ? "#EF4444" : T.accent}
             />
-            <Text style={[s.tabLabel, { color: speech.isSpeaking ? "#EF4444" : T.uiText }]}>
+            <Text style={[s.tabLabel, {
+              color: speech.isSpeaking ? "#EF4444" : T.uiText,
+            }]}>
               {speech.isSpeaking ? "STOP" : "VOICE"}
             </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={s.tabItem} onPress={() => setShowFontPanel(true)}>
-            <MaterialCommunityIcons name="format-font" size={20} color={T.accent} />
-            <Text style={[s.tabLabel, { color: T.uiText }]}>FONT</Text>
+          <TouchableOpacity
+            style={s.tabItem}
+            onPress={() => setShowBookmarks(true)}
+          >
+            <Ionicons
+              name="bookmarks-outline"
+              size={20}
+              color={T.accent}
+            />
+            {bm.bookmarks.length > 0 && (
+              <View style={[s.tabBadge, { backgroundColor: T.accent }]}>
+                <Text style={s.tabBadgeTxt}>{bm.bookmarks.length}</Text>
+              </View>
+            )}
+            <Text style={[s.tabLabel, { color: T.uiText }]}>SAVED</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={s.tabItem}
+            onPress={() => setShowFontPanel(true)}
+          >
+            <MaterialCommunityIcons
+              name="format-font"
+              size={20}
+              color={T.accent}
+            />
+            <Text style={[s.tabLabel, { color: T.uiText }]}>STYLE</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Font size + spacing + alignment quick controls */}
+        {/* Controls row */}
         <View style={s.controlRow}>
           <TouchableOpacity
             style={[s.sizeBtn, { backgroundColor: T.bg }]}
-            onPress={() => settings.setFontSize(Math.max(12, settings.fontSize - 1))}
+            onPress={settings.decreaseFontSize}
           >
             <Text style={{ color: T.text, fontSize: 14, fontWeight: "900" }}>A−</Text>
           </TouchableOpacity>
 
-          <View style={[s.alignRow, { borderColor: T.accent + "30", backgroundColor: T.bg }]}>
+          <View style={[s.alignRow, {
+            borderColor:     T.accent + "25",
+            backgroundColor: T.bg,
+          }]}>
             {(["left", "center", "justify"] as const).map((a) => (
               <TouchableOpacity
                 key={a}
@@ -413,7 +561,7 @@ function ReaderInner() {
                 <MaterialCommunityIcons
                   name={`format-align-${a}` as any}
                   size={18}
-                  color={settings.alignment === a ? T.accent : T.text + "40"}
+                  color={settings.alignment === a ? T.accent : T.text + "35"}
                 />
               </TouchableOpacity>
             ))}
@@ -421,210 +569,261 @@ function ReaderInner() {
 
           <TouchableOpacity
             style={[s.sizeBtn, { backgroundColor: T.bg }]}
-            onPress={() =>
-              settings.setLineSpacing(
-                settings.lineSpacing >= 2.5
-                  ? 1.5
-                  : parseFloat((settings.lineSpacing + 0.25).toFixed(2))
-              )
-            }
+            onPress={settings.cycleLineSpacing}
           >
-            <MaterialCommunityIcons name="format-line-spacing" size={18} color={T.accent} />
+            <MaterialCommunityIcons
+              name="format-line-spacing"
+              size={18}
+              color={T.accent}
+            />
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[s.sizeBtn, { backgroundColor: T.bg }]}
-            onPress={() => settings.setFontSize(Math.min(36, settings.fontSize + 1))}
+            onPress={settings.increaseFontSize}
           >
             <Text style={{ color: T.text, fontSize: 18, fontWeight: "900" }}>A+</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Themes + Weave */}
+        {/* Theme + Weave row */}
         <View style={s.footerRow}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }}>
-            <View style={s.themeRow}>
-              {Object.values(THEMES).map((t) => (
-                <TouchableOpacity
-                  key={t.name}
-                  onPress={() => settings.setTheme(t)}
-                  style={[
-                    s.themeDot,
-                    {
-                      backgroundColor: t.bg,
-                      borderWidth: T.name === t.name ? 3 : 1,
-                      borderColor: T.name === t.name ? T.accent : "#444",
-                    },
-                  ]}
-                />
-              ))}
-            </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={{ flex: 1 }}
+          >
+            {Object.values(THEMES).map((t) => (
+              <TouchableOpacity
+                key={t.name}
+                onPress={() => settings.setTheme(t)}
+                style={[s.themeDot, {
+                  backgroundColor: t.bg,
+                  borderWidth:     T.name === t.name ? 3 : 1,
+                  borderColor:     T.name === t.name ? T.accent : "#55555580",
+                }]}
+              />
+            ))}
           </ScrollView>
 
           <TouchableOpacity
             style={[s.weaveBtn, { backgroundColor: T.accent }]}
-            onPress={() =>
-              router.push({ pathname: "/weave/create", params: { bookId } })
-            }
+            onPress={() => router.push({
+              pathname: "/weave/create",
+              params:   { bookId },
+            })}
           >
-            <MaterialCommunityIcons name="fountain-pen-tip" size={18} color="#000" />
+            <MaterialCommunityIcons
+              name="fountain-pen-tip"
+              size={16}
+              color="#000"
+            />
             <Text style={s.weaveBtnTxt}>WEAVE</Text>
           </TouchableOpacity>
         </View>
       </Animated.View>
 
+      {/* ── CHAPTERS PANEL ── */}
+      {showChapters && (
+        <Pressable
+          style={s.chaptersOverlay}
+          onPress={() => setShowChapters(false)}
+        >
+          <Pressable style={[s.chaptersSheet, { backgroundColor: T.ui }]}>
+            <View style={s.handle} />
+            <View style={s.chaptersHeader}>
+              <Text style={[s.chaptersTitle, { color: T.accent }]}>CHAPTERS</Text>
+              <Text style={[s.chaptersCount, { color: T.uiText }]}>
+                {chapterMap.length} chapters
+              </Text>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {chapterMap.length === 0 ? (
+                <View style={s.chaptersEmpty}>
+                  <Text style={[s.chaptersEmptyTxt, { color: T.uiText }]}>
+                    No chapters detected in this book.
+                  </Text>
+                </View>
+              ) : (
+                chapterMap.map((ch, i) => {
+                  const isCurrent = prog.currentPage >= ch.pageIndex &&
+                    (i === chapterMap.length - 1 || prog.currentPage < chapterMap[i + 1].pageIndex);
+                  return (
+                    <TouchableOpacity
+                      key={i}
+                      style={[s.chapterRow, {
+                        backgroundColor: isCurrent ? T.accent + "15" : "transparent",
+                        borderColor:     isCurrent ? T.accent + "40" : T.accent + "10",
+                      }]}
+                      onPress={() => navigateToChapter(ch.pageIndex)}
+                    >
+                      <View style={[s.chapterNum, {
+                        backgroundColor: isCurrent ? T.accent : T.bg,
+                      }]}>
+                        <Text style={[s.chapterNumTxt, {
+                          color: isCurrent ? "#000" : T.uiText,
+                        }]}>
+                          {i + 1}
+                        </Text>
+                      </View>
+                      <Text
+                        style={[s.chapterRowTxt, {
+                          color:      isCurrent ? T.accent : T.text,
+                          fontWeight: isCurrent ? "900" : "600",
+                        }]}
+                        numberOfLines={2}
+                      >
+                        {ch.title}
+                      </Text>
+                      <Text style={[s.chapterPage, { color: T.uiText }]}>
+                        p.{ch.pageIndex + 1}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+              <View style={{ height: 40 }} />
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      )}
+
       {/* ── MODALS ── */}
       <FontPanel
-              visible={showFontPanel}
-              onClose={() => setShowFontPanel(false)}
-              theme={T}
-              fontSize={settings.fontSize}
-              lineSpacing={settings.lineSpacing}
-              alignment={settings.alignment}
-              fontKey={settings.fontKey}
-              currentFont={settings.currentFont}
-              setFontSize={settings.setFontSize}
-              setLineSpacing={settings.setLineSpacing}
-              setAlignment={settings.setAlignment}
-              setFontKey={settings.setFontKey} margins={0} paragraphGap={0} setMargins={function (n: number): void {
-                  throw new Error("Function not implemented.");
-              } } setParagraphGap={function (n: number): void {
-                  throw new Error("Function not implemented.");
-              } } resetToDefaults={function (): void {
-                  throw new Error("Function not implemented.");
-              } } increaseFontSize={function (): void {
-                  throw new Error("Function not implemented.");
-              } } decreaseFontSize={function (): void {
-                  throw new Error("Function not implemented.");
-              } }      />
+        visible={showFontPanel}
+        onClose={() => setShowFontPanel(false)}
+        theme={T}
+        fontSize={settings.fontSize}
+        lineSpacing={settings.lineSpacing}
+        alignment={settings.alignment}
+        fontKey={settings.fontKey}
+        currentFont={settings.currentFont}
+        margins={settings.margins}
+        paragraphGap={settings.paragraphGap}
+        setFontSize={settings.setFontSize}
+        setLineSpacing={settings.setLineSpacing}
+        setAlignment={settings.setAlignment}
+        setFontKey={settings.setFontKey}
+        setMargins={settings.setMargins}
+        setParagraphGap={settings.setParagraphGap}
+        resetToDefaults={settings.resetToDefaults}
+        increaseFontSize={settings.increaseFontSize}
+        decreaseFontSize={settings.decreaseFontSize}
+      />
 
       <VoicePanel
-              visible={showVoicePanel}
-              onClose={() => setShowVoicePanel(false)}
-              theme={T}
-              isSpeaking={speech.isSpeaking}
-              speakingPage={speech.speakingPage}
-              speechRate={speech.speechRate}
-              selectedVoice={speech.selectedVoice}
-              availableVoices={speech.availableVoices}
-              totalPages={pages.length}
-              toggleSpeech={speech.toggleSpeech}
-              setSpeechRate={speech.setSpeechRate}
-              setSelectedVoice={speech.setSelectedVoice}
-              previewVoice={speech.previewVoice} speechPitch={0} currentPage={0} stopSpeech={function (): void {
-                  throw new Error("Function not implemented.");
-              } } setSpeechPitch={function (p: number): void {
-                  throw new Error("Function not implemented.");
-              } }      />
+        visible={showVoicePanel}
+        onClose={() => setShowVoicePanel(false)}
+        theme={T}
+        isSpeaking={speech.isSpeaking}
+        speakingPage={speech.speakingPage}
+        speechRate={speech.speechRate}
+        speechPitch={speech.speechPitch}
+        selectedVoice={speech.selectedVoice}
+        availableVoices={speech.availableVoices}
+        totalPages={pages.length}
+        currentPage={prog.currentPage}
+        toggleSpeech={speech.toggleSpeech}
+        stopSpeech={speech.stopSpeech}
+        setSpeechRate={speech.setSpeechRate}
+        setSpeechPitch={speech.setSpeechPitch}
+        setSelectedVoice={speech.setSelectedVoice}
+        previewVoice={speech.previewVoice}
+      />
 
       <BookmarksPanel
-              visible={showBookmarks}
-              onClose={() => setShowBookmarks(false)}
-              theme={T}
-              bookmarks={bm.bookmarks}
-              currentPage={prog.currentPage}
-              onNavigate={navigateToBookmark}
-              onDelete={bm.deleteBookmark} totalPages={0} onClearAll={function (): void {
-                  throw new Error("Function not implemented.");
-              } } onColorChange={function (page: number, color: string): void {
-                  throw new Error("Function not implemented.");
-              } }      />
+        visible={showBookmarks}
+        onClose={() => setShowBookmarks(false)}
+        theme={T}
+        bookmarks={bm.bookmarks}
+        currentPage={prog.currentPage}
+        totalPages={pages.length}
+        onNavigate={navigateToBookmark}
+        onDelete={bm.deleteBookmark}
+        onClearAll={bm.clearAllBookmarks}
+        onColorChange={bm.updateBookmarkColor}
+      />
     </View>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// STYLES
-// FIX: all `gap` replaced with explicit margins to support older RN versions
-// ─────────────────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
   container:        { flex: 1 },
-  loadingScreen:    { flex: 1, justifyContent: "center", alignItems: "center" },
-  loadingText:      { marginTop: 20, fontWeight: "900", letterSpacing: 3, fontSize: 10 },
+  loadingScreen:    { flex: 1, justifyContent: "center", alignItems: "center", gap: 16 },
+  loadingText:      { fontWeight: "900", letterSpacing: 3, fontSize: 10 },
+  errorText:        { fontSize: 16, fontWeight: "700", textAlign: "center", marginTop: 16, paddingHorizontal: 32 },
+  errorBtn:         { marginTop: 20, paddingHorizontal: 28, paddingVertical: 12, borderRadius: 14 },
+  errorBtnTxt:      { color: "#000", fontWeight: "900", fontSize: 13, letterSpacing: 2 },
 
-  topBar: {
-    position: "absolute", top: 0, left: 0, right: 0, height: 95,
-    flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between",
-    paddingHorizontal: 20, paddingBottom: 12, zIndex: 100,
-  },
-  iconBtn:   { width: 38, height: 38, justifyContent: "center", alignItems: "center" },
-  topRight:  { flexDirection: "row", alignItems: "center" },
-  bookTitle: {
-    flex: 1, textAlign: "center", fontSize: 11,
-    fontWeight: "900", textTransform: "uppercase", letterSpacing: 2,
-  },
+  // Top bar
+  topBar:           { position: "absolute", top: 0, left: 0, right: 0, height: 95, flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 12, zIndex: 100 },
+  iconBtn:          { width: 38, height: 38, justifyContent: "center", alignItems: "center" },
+  topCenter:        { flex: 1, alignItems: "center" },
+  topRight:         { flexDirection: "row", alignItems: "center" },
+  bookTitle:        { fontSize: 11, fontWeight: "900", textTransform: "uppercase", letterSpacing: 2, textAlign: "center" },
+  bookSubtitle:     { fontSize: 9, marginTop: 2, letterSpacing: 1 },
 
-  progressTrack: {
-    position: "absolute", left: 0, right: 0, height: 2,
-    backgroundColor: "rgba(255,255,255,0.05)", zIndex: 100,
-  },
-  progressFill: { height: "100%" },
+  // Progress
+  progressTrack:    { position: "absolute", left: 0, right: 0, height: 2, backgroundColor: "rgba(255,255,255,0.04)", zIndex: 99 },
+  progressFill:     { height: "100%" },
 
-  scrollContent:    { paddingHorizontal: 26 },
-  bookHeader:       { alignItems: "center", paddingTop: 28, paddingBottom: 20 },
-  heroCover: {
-    width: 148, height: 216, borderRadius: 14, marginBottom: 16,
-    borderWidth: 1, borderColor: "rgba(255,215,0,0.25)",
-  },
-  placeholderCover: {
-    width: 148, height: 216, borderRadius: 14,
-    marginBottom: 16, justifyContent: "center", alignItems: "center",
-  },
-  heroTitle:  { fontSize: 23, fontWeight: "900", textAlign: "center", marginBottom: 6 },
-  heroAuthor: { fontSize: 12, letterSpacing: 3, textAlign: "center" },
-  openingLine:{ width: 48, height: 1, marginTop: 18, borderRadius: 1 },
+  // Resume bar
+  resumeBar:        { position: "absolute", left: 16, right: 16, flexDirection: "row", alignItems: "center", gap: 8, padding: 12, borderRadius: 14, zIndex: 200 },
+  resumeBarTxt:     { flex: 1, fontSize: 12, fontWeight: "600" },
+  resumeBtn:        { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10 },
+  resumeBtnTxt:     { color: "#000", fontWeight: "900", fontSize: 10, letterSpacing: 1 },
 
-  swipePage: { flex: 1, paddingHorizontal: 26, paddingTop: 60, flexDirection: "column" },
-  pageChapterTag: {
-    alignSelf: "center", marginBottom: 16,
-    paddingHorizontal: 14, paddingVertical: 5,
-    borderWidth: 1, borderRadius: 20,
-  },
-  pageChapterTagTxt: { fontSize: 9, fontWeight: "900", letterSpacing: 3 },
-  pageNumRow: {
-    flexDirection: "row", alignItems: "center",
-    paddingVertical: 10, borderTopWidth: 1,
-  },
-  // FIX: gap replaced with marginHorizontal on children
-  pageNumLine: { flex: 1, height: 1, marginHorizontal: 5 },
-  pageNumTxt:  { fontSize: 9, fontWeight: "900", letterSpacing: 2 },
+  // Scroll content
+  scrollContent:    {},
+  bookHeader:       { alignItems: "center", paddingTop: 20, paddingBottom: 32 },
+  heroCover:        { width: 150, height: 220, borderRadius: 16, marginBottom: 20, borderWidth: 1, borderColor: "rgba(255,215,0,0.2)" },
+  placeholderCover: { width: 150, height: 220, borderRadius: 16, marginBottom: 20, justifyContent: "center", alignItems: "center" },
+  heroTitle:        { fontSize: 24, fontWeight: "900", textAlign: "center", marginBottom: 6 },
+  heroAuthor:       { fontSize: 12, letterSpacing: 3, textAlign: "center", marginBottom: 10 },
+  genreTag:         { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20, borderWidth: 1, marginBottom: 8 },
+  genreTagTxt:      { fontSize: 9, fontWeight: "900", letterSpacing: 2 },
+  estimateText:     { fontSize: 11, marginTop: 4, marginBottom: 16 },
+  openingLine:      { width: 50, height: 1, marginTop: 8, borderRadius: 1 },
 
-  bottomPanel: {
-    position: "absolute", bottom: 0, left: 0, right: 0,
-    paddingBottom: Platform.OS === "ios" ? 34 : 20,
-    borderTopLeftRadius: 26, borderTopRightRadius: 26,
-    paddingHorizontal: 24, paddingTop: 18, zIndex: 100,
-  },
-  navTabs: { flexDirection: "row", justifyContent: "space-between", marginBottom: 14 },
-  tabItem: { alignItems: "center", flex: 1 },
-  tabLabel:{ fontSize: 7, fontWeight: "900", marginTop: 4, letterSpacing: 0.5 },
+  // Swipe page
+  swipePage:        { flexDirection: "column", paddingTop: 65 },
+  pageChapterTag:   { alignSelf: "center", marginBottom: 16, paddingHorizontal: 14, paddingVertical: 5, borderWidth: 1, borderRadius: 20 },
+  pageChapterTagTxt:{ fontSize: 9, fontWeight: "900", letterSpacing: 3 },
+  bookmarkStrip:    { position: "absolute", top: 0, right: 30, width: 4, height: 36, borderBottomLeftRadius: 4, borderBottomRightRadius: 4 },
+  pageNumRow:       { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, borderTopWidth: 1, marginTop: 8 },
+  pageNumLine:      { flex: 1, height: 1 },
+  pageNumTxt:       { fontSize: 10, fontWeight: "700", letterSpacing: 1 },
 
-  controlRow: {
-    flexDirection: "row", justifyContent: "space-between",
-    alignItems: "center", marginBottom: 14,
-  },
-  sizeBtn: {
-    width: 40, height: 40, justifyContent: "center",
-    alignItems: "center", borderRadius: 10,
-    // FIX: gap replaced — siblings use marginHorizontal in controlRow
-    marginHorizontal: 2,
-  },
-  alignRow: {
-    flexDirection: "row", borderWidth: 1,
-    paddingHorizontal: 8, paddingVertical: 6,
-    borderRadius: 14, flex: 1, justifyContent: "space-around",
-    marginHorizontal: 6,
-  },
-  alignBtn: { padding: 4 },
+  // Bottom panel
+  bottomPanel:      { position: "absolute", bottom: 0, left: 0, right: 0, paddingBottom: Platform.OS === "ios" ? 34 : 20, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingTop: 14, zIndex: 100 },
+  progressInfoRow:  { flexDirection: "row", justifyContent: "space-between", marginBottom: 10 },
+  progressTxt:      { fontSize: 9, fontWeight: "700", letterSpacing: 0.5 },
+  navTabs:          { flexDirection: "row", justifyContent: "space-between", marginBottom: 12 },
+  tabItem:          { alignItems: "center", flex: 1, position: "relative" },
+  tabLabel:         { fontSize: 7, fontWeight: "900", marginTop: 4, letterSpacing: 0.5 },
+  tabBadge:         { position: "absolute", top: -4, right: 4, width: 14, height: 14, borderRadius: 7, justifyContent: "center", alignItems: "center" },
+  tabBadgeTxt:      { color: "#000", fontSize: 7, fontWeight: "900" },
+  controlRow:       { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 8 },
+  sizeBtn:          { width: 40, height: 40, justifyContent: "center", alignItems: "center", borderRadius: 10 },
+  alignRow:         { flexDirection: "row", gap: 4, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 6, borderRadius: 14, flex: 1, justifyContent: "space-around" },
+  alignBtn:         { padding: 4 },
+  footerRow:        { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  themeDot:         { width: 26, height: 26, borderRadius: 13, marginRight: 8 },
+  weaveBtn:         { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 16 },
+  weaveBtnTxt:      { color: "#000", fontWeight: "900", fontSize: 10, letterSpacing: 1.5 },
 
-  footerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  // FIX: gap replaced — themeDot uses marginRight instead
-  themeRow:  { flexDirection: "row", alignItems: "center" },
-  themeDot:  { width: 26, height: 26, borderRadius: 13, marginRight: 8 },
-  weaveBtn: {
-    flexDirection: "row", alignItems: "center",
-    paddingHorizontal: 12, paddingVertical: 9, borderRadius: 16,
-    marginLeft: 10,
-  },
-  weaveBtnTxt: { color: "#000", fontWeight: "900", fontSize: 10, letterSpacing: 1.5, marginLeft: 6 },
+  // Chapters panel
+  chaptersOverlay:  { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.6)", zIndex: 200, justifyContent: "flex-end" },
+  chaptersSheet:    { borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24, paddingBottom: Platform.OS === "ios" ? 44 : 28, maxHeight: height * 0.75 },
+  chaptersHeader:   { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", marginBottom: 16 },
+  chaptersTitle:    { fontSize: 13, fontWeight: "900", letterSpacing: 3 },
+  chaptersCount:    { fontSize: 11, fontWeight: "600" },
+  chaptersEmpty:    { paddingVertical: 32, alignItems: "center" },
+  chaptersEmptyTxt: { fontSize: 13 },
+  chapterRow:       { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 14, marginBottom: 8, borderWidth: 1 },
+  chapterNum:       { width: 32, height: 32, borderRadius: 10, justifyContent: "center", alignItems: "center", flexShrink: 0 },
+  chapterNumTxt:    { fontSize: 12, fontWeight: "900" },
+  chapterRowTxt:    { flex: 1, fontSize: 14, lineHeight: 20 },
+  chapterPage:      { fontSize: 10 },
+  handle:           { width: 44, height: 4, borderRadius: 2, backgroundColor: "rgba(255,255,255,0.2)", alignSelf: "center", marginBottom: 20 },
 });
