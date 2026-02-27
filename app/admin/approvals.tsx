@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
-  Image, Alert, ActivityIndicator, StatusBar, ScrollView,
-  Pressable,
+  Image, ActivityIndicator, StatusBar, ScrollView,
+  Pressable, Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -19,48 +19,66 @@ const THEME = {
   purple: "#A78BFA",
 };
 
-type ContentType = "books" | "articles" | "research";
-type StatusFilter = "submitted" | "published" | "rejected";
+// ── CROSS PLATFORM ALERT ─────────────────────────────────────────────────
+const showAlert = (
+  title: string,
+  message: string,
+  buttons: { text: string; style?: string; onPress?: () => void }[]
+) => {
+  if (Platform.OS === "web") {
+    const confirmBtn = buttons.find((b) => b.style !== "cancel");
+    const cancelBtn  = buttons.find((b) => b.style === "cancel");
+    if (buttons.length === 1) {
+      window.alert(`${title}\n\n${message}`);
+      buttons[0].onPress?.();
+    } else {
+      const confirmed = window.confirm(`${title}\n\n${message}`);
+      if (confirmed) confirmBtn?.onPress?.();
+      else cancelBtn?.onPress?.();
+    }
+  } else {
+    const { Alert } = require("react-native");
+    Alert.alert(title, message, buttons);
+  }
+};
 
-const CONTENT_TABS: { key: ContentType; label: string; icon: string; collection: string }[] = [
-  { key: "books",    label: "Books",    icon: "book",           collection: "books" },
-  { key: "articles", label: "Articles", icon: "newspaper",      collection: "feed" },
-  { key: "research", label: "Research", icon: "flask",          collection: "feed" },
+type ContentType   = "books" | "articles" | "research";
+type StatusFilter  = "submitted" | "published" | "rejected";
+
+const CONTENT_TABS: { key: ContentType; label: string; icon: string }[] = [
+  { key: "books",    label: "Books",    icon: "book"      },
+  { key: "articles", label: "Articles", icon: "newspaper" },
+  { key: "research", label: "Research", icon: "flask"     },
 ];
 
 const STATUS_TABS: { key: StatusFilter; label: string; color: string }[] = [
   { key: "submitted", label: "Pending",   color: THEME.accent },
-  { key: "published", label: "Published", color: THEME.green },
-  { key: "rejected",  label: "Rejected",  color: THEME.red },
+  { key: "published", label: "Published", color: THEME.green  },
+  { key: "rejected",  label: "Rejected",  color: THEME.red    },
 ];
 
 export default function ApprovalsScreen() {
   const router = useRouter();
-  const [contentType, setContentType] = useState<ContentType>("books");
+  const [contentType,  setContentType]  = useState<ContentType>("books");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("submitted");
-  const [items, setItems] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [counts, setCounts] = useState<Record<ContentType, number>>({
+  const [items,        setItems]        = useState<any[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [counts,       setCounts]       = useState<Record<ContentType, number>>({
     books: 0, articles: 0, research: 0,
   });
 
-  // ── LOAD PENDING COUNTS FOR BADGES ────────────────────────────────
+  // ── PENDING COUNTS ───────────────────────────────────────────────
   useEffect(() => {
-    const unsubs: any[] = [];
+    const unsubs: (() => void)[] = [];
 
-    // Books pending count
     unsubs.push(onSnapshot(
       query(collection(db, "books"), where("status", "==", "submitted")),
       (snap) => setCounts((c) => ({ ...c, books: snap.size }))
     ));
-
-    // Articles pending count
     unsubs.push(onSnapshot(
       query(collection(db, "feed"), where("type", "==", "article"), where("status", "==", "submitted")),
       (snap) => setCounts((c) => ({ ...c, articles: snap.size }))
     ));
-
-    // Research pending count
     unsubs.push(onSnapshot(
       query(collection(db, "feed"), where("type", "==", "research"), where("status", "==", "submitted")),
       (snap) => setCounts((c) => ({ ...c, research: snap.size }))
@@ -69,26 +87,18 @@ export default function ApprovalsScreen() {
     return () => unsubs.forEach((u) => u());
   }, []);
 
-  // ── LOAD ITEMS ─────────────────────────────────────────────────────
+  // ── LOAD ITEMS ───────────────────────────────────────────────────
   useEffect(() => {
     setLoading(true);
     setItems([]);
 
-    let q;
-
-    if (contentType === "books") {
-      q = query(
-        collection(db, "books"),
-        where("status", "==", statusFilter)
-      );
-    } else {
-      // Articles and research both live in "feed" collection
-      q = query(
-        collection(db, "feed"),
-        where("type", "==", contentType === "articles" ? "article" : "research"),
-        where("status", "==", statusFilter)
-      );
-    }
+    const q = contentType === "books"
+      ? query(collection(db, "books"), where("status", "==", statusFilter))
+      : query(
+          collection(db, "feed"),
+          where("type",   "==", contentType === "articles" ? "article" : "research"),
+          where("status", "==", statusFilter)
+        );
 
     const unsub = onSnapshot(q, (snap) => {
       setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
@@ -98,10 +108,10 @@ export default function ApprovalsScreen() {
     return () => unsub();
   }, [contentType, statusFilter]);
 
-  // ── APPROVE ────────────────────────────────────────────────────────
+  // ── APPROVE ──────────────────────────────────────────────────────
   const handleApprove = (itemId: string, title: string) => {
-    const collectionName = contentType === "books" ? "books" : "feed";
-    Alert.alert(
+    const col = contentType === "books" ? "books" : "feed";
+    showAlert(
       "Approve & Publish",
       `Publish "${title}"?`,
       [
@@ -109,28 +119,28 @@ export default function ApprovalsScreen() {
         {
           text: "Publish",
           onPress: async () => {
-            try{
-            await updateDoc(doc(db, collectionName, itemId), {
-              status: "published",
-              approvedAt: serverTimestamp(),
-              isPublished: true,
-            });
-            Alert.alert("✅ Published", `"${title}" is now live.`);
-          } catch (e: any) {
-            Alert.alert("Error", "Could not approve. Check Firestore rules. \n\n" + e.message);
-          }
+            try {
+              await updateDoc(doc(db, col, itemId), {
+                status:      "published",
+                approvedAt:  serverTimestamp(),
+                isPublished: true,
+              });
+              showAlert("Published ✅", `"${title}" is now live.`, [{ text: "OK" }]);
+            } catch (e: any) {
+              showAlert("Error", "Could not approve:\n" + e.message, [{ text: "OK" }]);
+            }
+          },
         },
-      },
-    ] 
+      ]
     );
   };
 
-  // ── REJECT ─────────────────────────────────────────────────────────
+  // ── REJECT ───────────────────────────────────────────────────────
   const handleReject = (itemId: string, title: string) => {
-    const collectionName = contentType === "books" ? "books" : "feed";
-    Alert.alert(
+    const col = contentType === "books" ? "books" : "feed";
+    showAlert(
       "Reject Submission",
-      `Reject "${title}"? The author will be notified.`,
+      `Reject "${title}"?`,
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -138,22 +148,63 @@ export default function ApprovalsScreen() {
           style: "destructive",
           onPress: async () => {
             try {
-            await updateDoc(doc(db, collectionName, itemId), {
-              status: "rejected",
-              rejectedAt: serverTimestamp(),
-              isPublished: false,
-            });
-            Alert.alert("❌ Rejected", `"${title}" has been rejected.`);
-          } catch (e: any) {
-            Alert.alert("Error", "Could not reject. Check Firestore rules. \n\n" + e.message);
-          }
+              await updateDoc(doc(db, col, itemId), {
+                status:      "rejected",
+                rejectedAt:  serverTimestamp(),
+                isPublished: false,
+              });
+              showAlert("Rejected", `"${title}" has been rejected.`, [{ text: "OK" }]);
+            } catch (e: any) {
+              showAlert("Error", "Could not reject:\n" + e.message, [{ text: "OK" }]);
+            }
+          },
         },
-      },
-    ]
+      ]
     );
   };
 
-  // ── RENDER BOOK CARD ───────────────────────────────────────────────
+  // ── RENDER ACTIONS ───────────────────────────────────────────────
+  const renderActions = (item: any) => {
+    if (statusFilter !== "submitted") {
+      return (
+        <View style={[styles.statusBadge, {
+          backgroundColor: statusFilter === "published" ? THEME.green + "20" : THEME.red + "20",
+        }]}>
+          <Ionicons
+            name={statusFilter === "published" ? "checkmark-circle" : "close-circle"}
+            size={14}
+            color={statusFilter === "published" ? THEME.green : THEME.red}
+          />
+          <Text style={[styles.statusTxt, {
+            color: statusFilter === "published" ? THEME.green : THEME.red,
+          }]}>
+            {statusFilter === "published" ? "Published" : "Rejected"}
+          </Text>
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.actionRow}>
+        <Pressable
+          style={({ pressed }) => [styles.rejectBtn, pressed && { opacity: 0.7 }]}
+          onPress={() => handleReject(item.id, item.title || "this item")}
+        >
+          <Ionicons name="close-circle" size={18} color={THEME.red} />
+          <Text style={styles.rejectTxt}>Reject</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.approveBtn, pressed && { opacity: 0.7 }]}
+          onPress={() => handleApprove(item.id, item.title || "this item")}
+        >
+          <Ionicons name="checkmark-circle" size={18} color="#000" />
+          <Text style={styles.approveTxt}>Approve & Publish</Text>
+        </Pressable>
+      </View>
+    );
+  };
+
+  // ── RENDER BOOK CARD ─────────────────────────────────────────────
   const renderBookCard = (item: any) => (
     <View style={styles.card}>
       <View style={styles.cardRow}>
@@ -177,16 +228,14 @@ export default function ApprovalsScreen() {
           </View>
         </View>
       </View>
-
       {item.description ? (
         <Text style={styles.cardDesc} numberOfLines={3}>{item.description}</Text>
       ) : null}
-
       {renderActions(item)}
     </View>
   );
 
-  // ── RENDER ARTICLE / RESEARCH CARD ────────────────────────────────
+  // ── RENDER FEED CARD ─────────────────────────────────────────────
   const renderFeedCard = (item: any) => (
     <View style={styles.card}>
       <View style={styles.feedTypeTag}>
@@ -196,74 +245,30 @@ export default function ApprovalsScreen() {
           color={contentType === "articles" ? THEME.blue : THEME.purple}
         />
         <Text style={[styles.feedTypeTxt, {
-          color: contentType === "articles" ? THEME.blue : THEME.purple
+          color: contentType === "articles" ? THEME.blue : THEME.purple,
         }]}>
           {contentType === "articles" ? "ARTICLE" : "RESEARCH"}
         </Text>
       </View>
-
-      <Text style={styles.cardTitle}>{item.title || item.content?.substring(0, 60) + "..."}</Text>
+      <Text style={styles.cardTitle}>
+        {item.title || item.content?.substring(0, 60) + "..."}
+      </Text>
       <Text style={styles.cardSub}>
         {item.authorName || item.username || "Unknown Author"}
       </Text>
-
       {item.content ? (
         <Text style={styles.cardDesc} numberOfLines={4}>{item.content}</Text>
       ) : null}
-
       <Text style={styles.cardDate}>
         {item.createdAt?.toDate?.()?.toLocaleDateString("en-NG", {
           day: "numeric", month: "short", year: "numeric",
         }) || ""}
       </Text>
-
       {renderActions(item)}
     </View>
   );
 
-  // ── RENDER ACTION BUTTONS ──────────────────────────────────────────
-  const renderActions = (item: any) => {
-    if (statusFilter !== "submitted") {
-      return (
-        <View style={[styles.statusBadge, {
-          backgroundColor: statusFilter === "published" ? THEME.green + "20" : THEME.red + "20",
-        }]}>
-          <Ionicons
-            name={statusFilter === "published" ? "checkmark-circle" : "close-circle"}
-            size={14}
-            color={statusFilter === "published" ? THEME.green : THEME.red}
-          />
-          <Text style={[styles.statusTxt, {
-            color: statusFilter === "published" ? THEME.green : THEME.red,
-          }]}>
-            {statusFilter === "published" ? "Published" : "Rejected"}
-          </Text>
-        </View>
-      );
-    }
-
-    return (
-      <View style={styles.actionRow}>
-        <Pressable       
-          style={styles.rejectBtn}
-          onPress={() => handleReject(item.id, item.title || "this item")}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <Ionicons name="close-circle" size={18} color={THEME.red} />
-          <Text style={styles.rejectTxt}>Reject</Text>
-        </Pressable>
-        <Pressable      
-          style={styles.approveBtn}
-          onPress={() => handleApprove(item.id, item.title || "this item")}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <Ionicons name="checkmark-circle" size={18} color="#000" />
-          <Text style={styles.approveTxt}>Approve & Publish</Text>
-        </Pressable>
-      </View>
-    );
-  };
-
+  // ── RENDER ───────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
@@ -282,27 +287,17 @@ export default function ApprovalsScreen() {
         {CONTENT_TABS.map((tab) => (
           <TouchableOpacity
             key={tab.key}
-            style={[
-              styles.contentTab,
-              contentType === tab.key && styles.contentTabActive,
-            ]}
-            onPress={() => {
-              setContentType(tab.key);
-              setStatusFilter("submitted");
-            }}
+            style={[styles.contentTab, contentType === tab.key && styles.contentTabActive]}
+            onPress={() => { setContentType(tab.key); setStatusFilter("submitted"); }}
           >
             <Ionicons
               name={tab.icon as any}
               size={16}
               color={contentType === tab.key ? "#000" : THEME.textMuted}
             />
-            <Text style={[
-              styles.contentTabTxt,
-              contentType === tab.key && styles.contentTabTxtActive,
-            ]}>
+            <Text style={[styles.contentTabTxt, contentType === tab.key && styles.contentTabTxtActive]}>
               {tab.label}
             </Text>
-            {/* Pending badge */}
             {counts[tab.key] > 0 && (
               <View style={styles.tabBadge}>
                 <Text style={styles.tabBadgeTxt}>{counts[tab.key]}</Text>
@@ -312,7 +307,7 @@ export default function ApprovalsScreen() {
         ))}
       </View>
 
-      {/* STATUS FILTER TABS */}
+      {/* STATUS TABS */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -321,23 +316,17 @@ export default function ApprovalsScreen() {
         {STATUS_TABS.map((tab) => (
           <TouchableOpacity
             key={tab.key}
-            style={[
-              styles.statusPill,
-              statusFilter === tab.key && { backgroundColor: tab.color, borderColor: tab.color },
-            ]}
+            style={[styles.statusPill, statusFilter === tab.key && { backgroundColor: tab.color, borderColor: tab.color }]}
             onPress={() => setStatusFilter(tab.key)}
           >
-            <Text style={[
-              styles.statusPillTxt,
-              statusFilter === tab.key && { color: "#000" },
-            ]}>
+            <Text style={[styles.statusPillTxt, statusFilter === tab.key && { color: "#000" }]}>
               {tab.label}
             </Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
 
-      {/* CONTENT */}
+      {/* LIST */}
       {loading ? (
         <ActivityIndicator color={THEME.accent} style={{ marginTop: 40 }} />
       ) : items.length === 0 ? (
@@ -345,9 +334,7 @@ export default function ApprovalsScreen() {
           <Text style={{ fontSize: 40 }}>
             {contentType === "books" ? "📚" : contentType === "articles" ? "📰" : "🔬"}
           </Text>
-          <Text style={styles.emptyTxt}>
-            No {statusFilter} {contentType}
-          </Text>
+          <Text style={styles.emptyTxt}>No {statusFilter} {contentType}</Text>
         </View>
       ) : (
         <FlatList
@@ -355,9 +342,7 @@ export default function ApprovalsScreen() {
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ padding: 16, gap: 16 }}
           renderItem={({ item }) =>
-            contentType === "books"
-              ? renderBookCard(item)
-              : renderFeedCard(item)
+            contentType === "books" ? renderBookCard(item) : renderFeedCard(item)
           }
         />
       )}
@@ -366,52 +351,40 @@ export default function ApprovalsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: THEME.bg },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 60, paddingBottom: 20, borderBottomWidth: 1, borderBottomColor: THEME.ui2 },
-  backBtn: { width: 40, height: 40, borderRadius: 12, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center" },
-  headerTitle: { color: THEME.accent, fontSize: 14, fontWeight: "900", letterSpacing: 3 },
-
-  // Content type tabs
-  contentTabRow: { flexDirection: "row", padding: 16, gap: 10 },
-  contentTab: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 14, backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.ui2, position: "relative" },
+  container:        { flex: 1, backgroundColor: THEME.bg },
+  header:           { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 60, paddingBottom: 20, borderBottomWidth: 1, borderBottomColor: THEME.ui2 },
+  backBtn:          { width: 40, height: 40, borderRadius: 12, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center" },
+  headerTitle:      { color: THEME.accent, fontSize: 14, fontWeight: "900", letterSpacing: 3 },
+  contentTabRow:    { flexDirection: "row", padding: 16, gap: 10 },
+  contentTab:       { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 14, backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.ui2, position: "relative" },
   contentTabActive: { backgroundColor: THEME.accent, borderColor: THEME.accent },
-  contentTabTxt: { color: THEME.textMuted, fontSize: 12, fontWeight: "800" },
+  contentTabTxt:    { color: THEME.textMuted, fontSize: 12, fontWeight: "800" },
   contentTabTxtActive: { color: "#000" },
-  tabBadge: { position: "absolute", top: -6, right: -6, backgroundColor: THEME.red, borderRadius: 10, minWidth: 18, height: 18, justifyContent: "center", alignItems: "center", paddingHorizontal: 3 },
-  tabBadgeTxt: { color: "#fff", fontSize: 8, fontWeight: "900" },
-
-  // Status filter pills
-  statusTabRow: { paddingHorizontal: 16, gap: 10, paddingBottom: 16 },
-  statusPill: { paddingHorizontal: 18, paddingVertical: 8, borderRadius: 20, backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.ui2 },
-  statusPillTxt: { color: THEME.textMuted, fontSize: 12, fontWeight: "800" },
-
-  // Cards
-  card: { backgroundColor: THEME.ui, borderRadius: 20, padding: 16, borderWidth: 1, borderColor: THEME.ui2 },
-  cardRow: { flexDirection: "row", gap: 14 },
-  bookCover: { width: 70, height: 100, borderRadius: 10, borderWidth: 1, borderColor: THEME.accent + "30" },
-  cardInfo: { flex: 1, gap: 4 },
-  cardTitle: { color: THEME.text, fontSize: 15, fontWeight: "900" },
-  cardSub: { color: THEME.textMuted, fontSize: 12 },
-  cardMeta: { color: THEME.accent + "80", fontSize: 11 },
-  cardMetaRow: { flexDirection: "row", gap: 12, marginTop: 4 },
-  cardPrice: { color: THEME.accent, fontSize: 11, fontWeight: "800" },
-  cardDate: { color: THEME.textMuted, fontSize: 10, marginTop: 4 },
-  cardDesc: { color: THEME.textMuted, fontSize: 12, lineHeight: 18, marginTop: 12, borderTopWidth: 1, borderTopColor: THEME.ui2, paddingTop: 12 },
-
-  // Feed card specific
-  feedTypeTag: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 10, backgroundColor: THEME.bg, alignSelf: "flex-start", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  feedTypeTxt: { fontSize: 9, fontWeight: "900", letterSpacing: 1 },
-
-  // Actions
-  actionRow: { flexDirection: "row", gap: 12, marginTop: 14 },
-  rejectBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderColor: THEME.red + "50" },
-  rejectTxt: { color: THEME.red, fontWeight: "800", fontSize: 13 },
-  approveBtn: { flex: 2, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 14, backgroundColor: THEME.accent },
-  approveTxt: { color: "#000", fontWeight: "900", fontSize: 13 },
-  statusBadge: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 12, padding: 8, borderRadius: 10, alignSelf: "flex-start" },
-  statusTxt: { fontSize: 12, fontWeight: "800" },
-
-  // Empty
-  empty: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12, marginTop: 80 },
-  emptyTxt: { color: THEME.textMuted, fontSize: 14 },
+  tabBadge:         { position: "absolute", top: -6, right: -6, backgroundColor: THEME.red, borderRadius: 10, minWidth: 18, height: 18, justifyContent: "center", alignItems: "center", paddingHorizontal: 3 },
+  tabBadgeTxt:      { color: "#fff", fontSize: 8, fontWeight: "900" },
+  statusTabRow:     { paddingHorizontal: 16, gap: 10, paddingBottom: 16 },
+  statusPill:       { paddingHorizontal: 18, paddingVertical: 8, borderRadius: 20, backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.ui2 },
+  statusPillTxt:    { color: THEME.textMuted, fontSize: 12, fontWeight: "800" },
+  card:             { backgroundColor: THEME.ui, borderRadius: 20, padding: 16, borderWidth: 1, borderColor: THEME.ui2 },
+  cardRow:          { flexDirection: "row", gap: 14 },
+  bookCover:        { width: 70, height: 100, borderRadius: 10, borderWidth: 1, borderColor: THEME.accent + "30" },
+  cardInfo:         { flex: 1, gap: 4 },
+  cardTitle:        { color: THEME.text, fontSize: 15, fontWeight: "900" },
+  cardSub:          { color: THEME.textMuted, fontSize: 12 },
+  cardMeta:         { color: THEME.accent + "80", fontSize: 11 },
+  cardMetaRow:      { flexDirection: "row", gap: 12, marginTop: 4 },
+  cardPrice:        { color: THEME.accent, fontSize: 11, fontWeight: "800" },
+  cardDate:         { color: THEME.textMuted, fontSize: 10, marginTop: 4 },
+  cardDesc:         { color: THEME.textMuted, fontSize: 12, lineHeight: 18, marginTop: 12, borderTopWidth: 1, borderTopColor: THEME.ui2, paddingTop: 12 },
+  feedTypeTag:      { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 10, backgroundColor: THEME.bg, alignSelf: "flex-start", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  feedTypeTxt:      { fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  actionRow:        { flexDirection: "row", gap: 12, marginTop: 14 },
+  rejectBtn:        { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderColor: THEME.red + "50" },
+  rejectTxt:        { color: THEME.red, fontWeight: "800", fontSize: 13 },
+  approveBtn:       { flex: 2, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 14, backgroundColor: THEME.accent },
+  approveTxt:       { color: "#000", fontWeight: "900", fontSize: 13 },
+  statusBadge:      { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 12, padding: 8, borderRadius: 10, alignSelf: "flex-start" },
+  statusTxt:        { fontSize: 12, fontWeight: "800" },
+  empty:            { flex: 1, justifyContent: "center", alignItems: "center", gap: 12, marginTop: 80 },
+  emptyTxt:         { color: THEME.textMuted, fontSize: 14 },
 });
