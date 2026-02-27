@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
   Image, Alert, ActivityIndicator, StatusBar, ScrollView,
+  Pressable,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -243,20 +244,22 @@ export default function ApprovalsScreen() {
 
     return (
       <View style={styles.actionRow}>
-        <TouchableOpacity
+        <Pressable       
           style={styles.rejectBtn}
           onPress={() => handleReject(item.id, item.title || "this item")}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
           <Ionicons name="close-circle" size={18} color={THEME.red} />
           <Text style={styles.rejectTxt}>Reject</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
+        </Pressable>
+        <Pressable      
           style={styles.approveBtn}
           onPress={() => handleApprove(item.id, item.title || "this item")}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
           <Ionicons name="checkmark-circle" size={18} color="#000" />
           <Text style={styles.approveTxt}>Approve & Publish</Text>
-        </TouchableOpacity>
+        </Pressable>
       </View>
     );
   };
