@@ -69,7 +69,8 @@ export default function ReportsScreen() {
     (["pending", "resolved", "dismissed"] as ReportStatus[]).forEach((status) => {
       unsubCounts.push(onSnapshot(
         query(collection(db, "reports"), where("status", "==", status)),
-        (snap) => setCounts((c) => ({ ...c, [status]: snap.size }))
+        (snap) => setCounts((c) => ({ ...c, [status]: snap.size })),
+        () => setLoading(false)
       ));
     });
 

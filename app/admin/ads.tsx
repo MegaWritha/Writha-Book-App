@@ -35,9 +35,14 @@ export default function AdsScreen() {
 
   useEffect(() => {
     const unsub = onSnapshot(
-      query(collection(db, "ads"), orderBy("createdAt", "desc")),
+      collection(db, "ads"), 
       (snap) => {
         setAds(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setLoading(false);
+      },
+      (error) => {
+        // Collection doesn't exist yet
+        setAds([]);
         setLoading(false);
       }
     );
