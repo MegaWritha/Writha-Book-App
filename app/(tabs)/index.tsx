@@ -428,7 +428,7 @@ export default function HomeScreen() {
             onPress={() =>
               router.push({
                 pathname: "/weave/create",
-                params: { bookId: item.id, bookTitle: item.title },
+                params: { bookId: item.id, bookTitle: item.title, authorName: item.authorName || item.author || "" },
               } as any)
             }
           >
