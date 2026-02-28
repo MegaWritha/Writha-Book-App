@@ -281,19 +281,23 @@ export default function LibraryScreen() {
       />
 
       {/* HEADER */}
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-        <View>
-          <Text style={styles.headerSmall}>WRITHA</Text>
-          <Text style={styles.headerTitle}>My Library</Text>
-        </View>
-        <TouchableOpacity
-          style={styles.writeBtn}
-          onPress={() => router.push("/write" as any)}
-        >
-          <MaterialCommunityIcons name="pencil-plus" size={18} color="#000" />
-          <Text style={styles.writeBtnTxt}>Write</Text>
-        </TouchableOpacity>
-      </View>
+      <View style={styles.headerBtns}>
+  <TouchableOpacity
+    style={styles.publishBtn}
+    onPress={() => router.push("/publish" as any)}
+  >
+    <Ionicons name="cloud-upload-outline" size={16} color={THEME.accent} />
+    <Text style={styles.publishBtnTxt}>Publish</Text>
+  </TouchableOpacity>
+
+  <TouchableOpacity
+    style={styles.writeBtn}
+    onPress={() => router.push("/write" as any)}
+  >
+    <MaterialCommunityIcons name="pencil-plus" size={18} color="#000" />
+    <Text style={styles.writeBtnTxt}>Write</Text>
+  </TouchableOpacity>
+</View>
 
       {/* QUICK STATS ROW */}
       <View style={styles.quickStatsRow}>
@@ -556,6 +560,9 @@ const styles = StyleSheet.create({
   headerTitle: { color: THEME.text, fontSize: 28, fontWeight: "900", marginTop: 4 },
   writeBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accent, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 14 },
   writeBtnTxt: { color: "#000", fontWeight: "900", fontSize: 13 },
+  headerBtns:     { flexDirection: "row", gap: 8, alignItems: "center" },
+  publishBtn:     { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accentDim, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, borderWidth: 1, borderColor: THEME.accent + "40" },
+  publishBtnTxt:  { color: THEME.accent, fontWeight: "900", fontSize: 13 },
 
   // Quick stats
   quickStatsRow: { flexDirection: "row", marginHorizontal: 16, backgroundColor: THEME.ui, borderRadius: 18, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: THEME.ui2 },
