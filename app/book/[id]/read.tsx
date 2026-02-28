@@ -610,7 +610,7 @@ export default function ReaderScreen() {
             style={[s.weaveBtn, { backgroundColor: T.accent }]}
             onPress={() => router.push({
               pathname: "/weave/create",
-              params:   { bookId },
+              params:   { bookId, bookTitle: book.title || book.title || "", authorName: book.authorName || book.author || "" },
             })}
           >
             <MaterialCommunityIcons

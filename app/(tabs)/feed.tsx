@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback, memo } from "react";
 import {
   View, Text, StyleSheet, FlatList, ActivityIndicator, TouchableOpacity,
   Image, StatusBar, RefreshControl, Alert, Share, Animated,
-  Dimensions, TextInput, Modal, ScrollView,
+  Dimensions, TextInput, Modal, ScrollView, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -12,76 +12,107 @@ import { LinearGradient } from "expo-linear-gradient";
 import {
   collection, query, orderBy, limit, startAfter, onSnapshot,
   getDocs, doc, updateDoc, arrayUnion, arrayRemove, getDoc,
-  deleteDoc, addDoc, serverTimestamp, where,
+  deleteDoc, addDoc, serverTimestamp, where, increment,
 } from "firebase/firestore";
 
 const { width } = Dimensions.get("window");
 const PAGE_SIZE = 15;
 
 const THEME = {
-  bg: "#07030F",
-  ui: "#0F0820",
-  ui2: "#170D2E",
-  ui3: "#201540",
-  accent: "#FFD700",
-  accentDim: "rgba(255,215,0,0.08)",
-  purple: "#6D28D9",
+  bg:          "#07030F",
+  ui:          "#0F0820",
+  ui2:         "#170D2E",
+  ui3:         "#201540",
+  accent:      "#FFD700",
+  accentDim:   "rgba(255,215,0,0.08)",
+  purple:      "#6D28D9",
   purpleLight: "#A78BFA",
-  purpleDim: "rgba(109,40,217,0.15)",
-  text: "#EDE8F5",
-  textMuted: "#6B5F80",
-  green: "#22C55E",
-  red: "#EF4444",
-  blue: "#38BDF8",
-  border: "#1A1030",
+  purpleDim:   "rgba(109,40,217,0.15)",
+  text:        "#EDE8F5",
+  textMuted:   "#6B5F80",
+  green:       "#22C55E",
+  red:         "#EF4444",
+  blue:        "#38BDF8",
+  border:      "#1A1030",
 };
 
-// ── TYPE CONFIG ───────────────────────────────────────────────────────────
-const TYPE_CONFIG: Record<string, {
-  label: string; color: string; icon: string; bg: string;
-}> = {
-  discussion:  { label: "DISCUSSION",    color: THEME.purpleLight, icon: "chatbubbles",         bg: THEME.purpleDim        },
-  article:     { label: "ARTICLE",       color: THEME.blue,        icon: "newspaper",            bg: "rgba(56,189,248,0.1)" },
-  book:        { label: "NEW BOOK",      color: THEME.accent,      icon: "book",                 bg: THEME.accentDim        },
-  book_update: { label: "BOOK UPDATE",   color: THEME.accent,      icon: "book-outline",         bg: THEME.accentDim        },
-  research:    { label: "RESEARCH",      color: "#00D1FF",         icon: "flask",                bg: "rgba(0,209,255,0.08)" },
-  admin:       { label: "ANNOUNCEMENT",  color: THEME.purple,      icon: "megaphone",            bg: THEME.purpleDim        },
-  ad:          { label: "SPONSORED",     color: THEME.textMuted,   icon: "star-outline",         bg: "rgba(255,255,255,0.03)" },
-  weave:       { label: "WEAVE",         color: "#F59E0B",         icon: "feather",              bg: "rgba(245,158,11,0.1)" },
+const showAlert = (
+  title: string,
+  message: string,
+  buttons: { text: string; style?: string; onPress?: () => void }[]
+) => {
+  if (Platform.OS === "web") {
+    if (buttons.length === 1) {
+      window.alert(`${title}\n\n${message}`);
+      buttons[0].onPress?.();
+    } else {
+      const ok = window.confirm(`${title}\n\n${message}`);
+      if (ok) buttons.find((b) => b.style !== "cancel")?.onPress?.();
+      else    buttons.find((b) => b.style === "cancel")?.onPress?.();
+    }
+  } else {
+    Alert.alert(title, message, buttons as any);
+  }
 };
 
-// ── STORY RING FILTER BAR ─────────────────────────────────────────────────
+const TYPE_CONFIG: Record<string, { label: string; color: string; icon: string; bg: string }> = {
+  discussion:  { label: "DISCUSSION",   color: THEME.purpleLight, icon: "chatbubbles",  bg: THEME.purpleDim          },
+  article:     { label: "ARTICLE",      color: THEME.blue,        icon: "newspaper",    bg: "rgba(56,189,248,0.1)"   },
+  book:        { label: "NEW BOOK",     color: THEME.accent,      icon: "book",         bg: THEME.accentDim          },
+  book_update: { label: "BOOK UPDATE",  color: THEME.accent,      icon: "book-outline", bg: THEME.accentDim          },
+  research:    { label: "RESEARCH",     color: "#00D1FF",         icon: "flask",        bg: "rgba(0,209,255,0.08)"   },
+  admin:       { label: "ANNOUNCEMENT", color: THEME.purple,      icon: "megaphone",    bg: THEME.purpleDim          },
+  ad:          { label: "SPONSORED",    color: THEME.textMuted,   icon: "star-outline", bg: "rgba(255,255,255,0.03)" },
+  weave:       { label: "WEAVE",        color: "#F59E0B",         icon: "feather",      bg: "rgba(245,158,11,0.1)"   },
+};
+
+const WEAVE_TYPE_COLOR: Record<string, string> = {
+  Analysis:   "#38BDF8",
+  Critique:   "#FFD700",
+  Research:   "#A78BFA",
+  Memory:     "#F97316",
+  Legacy:     "#22C55E",
+  Discussion: "#6D28D9",
+};
+
+const WEAVE_TYPE_ICON: Record<string, string> = {
+  Analysis:   "microscope",
+  Critique:   "star-half-full",
+  Research:   "book-search",
+  Memory:     "heart-outline",
+  Legacy:     "trophy-outline",
+  Discussion: "forum-outline",
+};
+
 const FILTER_TABS = [
-  { key: "all",        label: "All"          },
-  { key: "discussion", label: "Discussions"  },
-  { key: "article",    label: "Articles"     },
-  { key: "book",       label: "Books"        },
-  { key: "research",   label: "Research"     },
+  { key: "all",        label: "All"         },
+  { key: "discussion", label: "Discussions" },
+  { key: "article",    label: "Articles"    },
+  { key: "book",       label: "Books"       },
+  { key: "research",   label: "Research"    },
+  { key: "weave",      label: "Weaves"      },
 ];
 
-// ── REACTIONS ─────────────────────────────────────────────────────────────
 const REACTIONS = ["❤️", "🔥", "🤯", "👏", "💡", "😂"];
 
-// ── HELPER: format time ───────────────────────────────────────────────────
 const formatTime = (ts: any): string => {
   if (!ts) return "";
   const date = ts.toDate ? ts.toDate() : new Date(ts);
   const diff = (Date.now() - date.getTime()) / 1000;
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 60)     return "just now";
+  if (diff < 3600)   return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400)  return `${Math.floor(diff / 3600)}h ago`;
   if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
   return date.toLocaleDateString("en-NG", { month: "short", day: "numeric" });
 };
 
-// ── STORY RING (Active users) ─────────────────────────────────────────────
+// ── STORY RING ────────────────────────────────────────────────────────────
 const StoryRing = memo(({ user, onPress }: { user: any; onPress: () => void }) => (
   <TouchableOpacity style={styles.storyItem} onPress={onPress} activeOpacity={0.8}>
     <LinearGradient
       colors={["#FFD700", "#A78BFA", "#6D28D9"]}
       style={styles.storyRing}
-      start={{ x: 0, y: 1 }}
-      end={{ x: 1, y: 0 }}
+      start={{ x: 0, y: 1 }} end={{ x: 1, y: 0 }}
     >
       <View style={styles.storyInner}>
         <Image
@@ -99,25 +130,19 @@ const StoryRing = memo(({ user, onPress }: { user: any; onPress: () => void }) =
   </TouchableOpacity>
 ));
 
-// ── SPONSORED AD CARD ────────────────────────────────────────────────────
+// ── AD CARD ───────────────────────────────────────────────────────────────
 const AdCard = memo(({ item }: { item: any }) => (
   <View style={styles.adCard}>
     <View style={styles.adLabel}>
       <Ionicons name="megaphone-outline" size={10} color={THEME.textMuted} />
       <Text style={styles.adLabelTxt}>Sponsored</Text>
     </View>
-    {item.coverUrl || item.image ? (
-      <Image
-        source={{ uri: item.coverUrl || item.image }}
-        style={styles.adImage}
-        resizeMode="cover"
-      />
+    {(item.coverUrl || item.image) ? (
+      <Image source={{ uri: item.coverUrl || item.image }} style={styles.adImage} resizeMode="cover" />
     ) : null}
     <View style={styles.adBody}>
       <Text style={styles.adTitle}>{item.title}</Text>
-      {item.content ? (
-        <Text style={styles.adContent} numberOfLines={2}>{item.content}</Text>
-      ) : null}
+      {item.content ? <Text style={styles.adContent} numberOfLines={2}>{item.content}</Text> : null}
       <TouchableOpacity style={styles.adCTA}>
         <Text style={styles.adCTATxt}>{item.ctaLabel || "Learn More"}</Text>
         <Ionicons name="arrow-forward" size={12} color="#000" />
@@ -127,12 +152,10 @@ const AdCard = memo(({ item }: { item: any }) => (
 ));
 
 // ── REACTION STRIP ────────────────────────────────────────────────────────
-const ReactionStrip = memo(({
-  postId, uid, reactions,
-}: {
+const ReactionStrip = memo(({ postId, uid, reactions }: {
   postId: string; uid: string; reactions: Record<string, string[]>;
 }) => {
-  const [visible, setVisible] = useState(false);
+  const [visible,  setVisible]  = useState(false);
   const scaleAnim = useRef(new Animated.Value(0)).current;
 
   const showPicker = () => {
@@ -143,11 +166,9 @@ const ReactionStrip = memo(({
   const react = async (emoji: string) => {
     setVisible(false);
     try {
-      const alreadyReacted = reactions[emoji]?.includes(uid);
+      const already = reactions[emoji]?.includes(uid);
       const update: Record<string, any> = {};
-      update[`reactions.${emoji}`] = alreadyReacted
-        ? arrayRemove(uid)
-        : arrayUnion(uid);
+      update[`reactions.${emoji}`] = already ? arrayRemove(uid) : arrayUnion(uid);
       await updateDoc(doc(db, "feed", postId), update);
     } catch (e) { console.error(e); }
   };
@@ -185,9 +206,9 @@ const ReactionStrip = memo(({
   );
 });
 
-// ── QUICK COMMENT INPUT ───────────────────────────────────────────────────
+// ── QUICK COMMENT ─────────────────────────────────────────────────────────
 const QuickComment = memo(({ postId, uid, userPhoto, onDone }: any) => {
-  const [text, setText] = useState("");
+  const [text,    setText]    = useState("");
   const [posting, setPosting] = useState(false);
 
   const submit = async () => {
@@ -195,12 +216,12 @@ const QuickComment = memo(({ postId, uid, userPhoto, onDone }: any) => {
     setPosting(true);
     try {
       await addDoc(collection(db, "feed", postId, "comments"), {
-        content: text.trim(),
-        userId: uid,
+        content:   text.trim(),
+        userId:    uid,
         createdAt: serverTimestamp(),
       });
       await updateDoc(doc(db, "feed", postId), {
-        commentsCount: (await getDoc(doc(db, "feed", postId))).data()?.commentsCount + 1 || 1,
+        commentsCount: increment(1),
       });
       setText("");
       onDone?.();
@@ -228,11 +249,10 @@ const QuickComment = memo(({ postId, uid, userPhoto, onDone }: any) => {
         />
         {text.length > 0 && (
           <TouchableOpacity onPress={submit} disabled={posting}>
-            {posting ? (
-              <ActivityIndicator size="small" color={THEME.accent} />
-            ) : (
-              <Ionicons name="send" size={16} color={THEME.accent} />
-            )}
+            {posting
+              ? <ActivityIndicator size="small" color={THEME.accent} />
+              : <Ionicons name="send" size={16} color={THEME.accent} />
+            }
           </TouchableOpacity>
         )}
       </View>
@@ -240,377 +260,12 @@ const QuickComment = memo(({ postId, uid, userPhoto, onDone }: any) => {
   );
 });
 
-// ── POST CARD ─────────────────────────────────────────────────────────────
-const PostCard = memo(({ item, uid, userPhoto, toggleLike, onProfilePress }: any) => {
-  const router = useRouter();
-  const liked = item.likedBy?.includes(uid);
-  const isOwner = uid === item.userId || uid === item.authorId;
-  const typeConfig = TYPE_CONFIG[item.type] || TYPE_CONFIG.discussion;
-  const [showComment, setShowComment] = useState(false);
-  const [bookmarked, setBookmarked] = useState(false);
-
-  // Card entrance animation
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const translateY = useRef(new Animated.Value(20)).current;
-  useEffect(() => {
-    Animated.parallel([
-      Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
-      Animated.timing(translateY, { toValue: 0, duration: 400, useNativeDriver: true }),
-    ]).start();
-  }, []);
-
-  const handleBookmark = async () => {
-    setBookmarked(!bookmarked);
-    try {
-      await updateDoc(doc(db, "users", uid, "bookmarks", item.id), {
-        postId: item.id,
-        savedAt: serverTimestamp(),
-      });
-    } catch (e) { console.error(e); }
-  };
-
-  const onShare = async () => {
-    try {
-      await Share.share({
-        message: `${item.title || item.content?.slice(0, 80) || "Check this out"} — Writha`,
-      });
-    } catch (e) { console.error(e); }
-  };
-
-  const handleSettings = () => {
-    const options: any[] = [
-      { text: "📤 Share", onPress: onShare },
-      { text: "🔖 Bookmark", onPress: handleBookmark },
-      { text: "🚫 Hide Post", onPress: () => Alert.alert("Hidden", "You won't see this post again.") },
-      { text: "⚠️ Report", onPress: () => Alert.alert("Reported", "Thank you for keeping Writha safe.") },
-      { text: "Cancel", style: "cancel" as const },
-    ];
-    if (isOwner) {
-      options.splice(1, 0, {
-        text: "🗑️ Delete Post",
-        style: "destructive" as const,
-        onPress: () =>
-          Alert.alert("Delete?", "This cannot be undone.", [
-            { text: "Cancel", style: "cancel" },
-            {
-              text: "Delete",
-              style: "destructive",
-              onPress: async () => await deleteDoc(doc(db, "feed", item.id)),
-            },
-          ]),
-      });
-    }
-    Alert.alert("Post Options", "", options);
-  };
-
-  const navigateToPost = () => {
-    if (item.type === "book" || item.type === "book_update") {
-      router.push(`/book/${item.bookId || item.originalId || item.id}` as any);
-    } else if (item.type === "research") {
-      router.push(`/research/${item.originalId || item.id}` as any);
-    } else {
-      router.push(`/discussion/${item.id}/comments` as any);
-    }
-  };
-
-  // ── AD CARD ────────────────────────────────────────────────────────
-  if (item.type === "ad") {
-    return <AdCard item={item} />;
-  }
-
-  const authorName =
-    item.userName || item.authorName || item.displayName || item.fullName || "Scholar";
-  const authorHandle =
-    item.userHandle || item.authorUsername || item.username || authorName.toLowerCase().replace(/\s/g, "");
-  const authorPhoto =
-    item.userPhoto || item.authorPhoto || item.photoURL ||
-    `https://ui-avatars.com/api/?name=${encodeURIComponent(authorName)}&background=170D2E&color=FFD700&bold=true`;
-
-  // ── ADMIN CARD ─────────────────────────────────────────────────────
-  if (item.type === "admin") {
-    return (
-      <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY }] }}>
-        <LinearGradient
-          colors={["#2D1B69", "#170D2E"]}
-          style={styles.adminCard}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-        >
-          <View style={styles.adminCardHeader}>
-            <View style={styles.adminBadge}>
-              <MaterialCommunityIcons name="shield-star" size={14} color={THEME.accent} />
-              <Text style={styles.adminBadgeTxt}>WRITHA OFFICIAL</Text>
-            </View>
-            <Text style={styles.postTime}>{formatTime(item.createdAt)}</Text>
-          </View>
-          <Text style={styles.adminTitle}>{item.title}</Text>
-          {item.content && <Text style={styles.adminContent}>{item.content}</Text>}
-          {(item.coverUrl || item.image) && (
-            <Image source={{ uri: item.coverUrl || item.image }} style={styles.postImage} />
-          )}
-        </LinearGradient>
-      </Animated.View>
-    );
-  }
-
-  return (
-    <Animated.View style={[styles.card, { opacity: fadeAnim, transform: [{ translateY }] }]}>
-
-      {/* PINNED INDICATOR */}
-      {item.isPinned && (
-        <View style={styles.pinnedStrip}>
-          <Ionicons name="pin" size={11} color={THEME.accent} />
-          <Text style={styles.pinnedTxt}>PINNED</Text>
-        </View>
-      )}
-
-      {/* TYPE BADGE */}
-      <View style={[styles.typeBadge, { backgroundColor: typeConfig.bg }]}>
-        <Ionicons name={typeConfig.icon as any} size={11} color={typeConfig.color} />
-        <Text style={[styles.typeBadgeTxt, { color: typeConfig.color }]}>{typeConfig.label}</Text>
-      </View>
-
-      {/* AUTHOR ROW */}
-      <View style={styles.authorRow}>
-        <TouchableOpacity
-          style={styles.authorLeft}
-          onPress={() => onProfilePress(item.userId || item.authorId)}
-          activeOpacity={0.8}
-        >
-          {/* Avatar with gradient ring */}
-          <LinearGradient
-            colors={[THEME.accent, THEME.purpleLight, THEME.purple]}
-            style={styles.avatarRing}
-            start={{ x: 0, y: 1 }}
-            end={{ x: 1, y: 0 }}
-          >
-            <View style={styles.avatarInner}>
-              <Image source={{ uri: authorPhoto }} style={styles.avatar} />
-            </View>
-          </LinearGradient>
-
-          <View style={styles.authorInfo}>
-            <View style={styles.authorNameRow}>
-              <Text style={styles.authorName}>{authorName}</Text>
-              {/* Verified badge for published authors */}
-              {item.isAuthor && (
-                <MaterialCommunityIcons name="check-decagram" size={14} color={THEME.accent} style={{ marginLeft: 4 }} />
-              )}
-              {item.isAdmin && (
-                <MaterialCommunityIcons name="shield-star" size={14} color={THEME.purple} style={{ marginLeft: 4 }} />
-              )}
-            </View>
-            <View style={styles.authorMeta}>
-              <Text style={styles.authorHandle}>@{authorHandle}</Text>
-              <Text style={styles.authorDot}>·</Text>
-              <Text style={styles.postTime}>{formatTime(item.createdAt)}</Text>
-            </View>
-          </View>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.moreBtn}
-          onPress={handleSettings}
-          hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
-        >
-          <Ionicons name="ellipsis-horizontal" size={20} color={THEME.textMuted} />
-        </TouchableOpacity>
-      </View>
-
-      {/* POST CONTENT */}
-      <TouchableOpacity onPress={navigateToPost} activeOpacity={0.9}>
-
-        {/* Book type — cover + details */}
-        {(item.type === "book" || item.type === "book_update") && (
-          <View style={styles.bookPreviewRow}>
-            <Image
-              source={{ uri: item.coverUrl || item.cover || "https://picsum.photos/80/120" }}
-              style={styles.bookPreviewCover}
-            />
-            <View style={styles.bookPreviewInfo}>
-              <Text style={styles.postTitle} numberOfLines={2}>{item.title}</Text>
-              {item.genre && (
-                <View style={styles.genrePill}>
-                  <Text style={styles.genrePillTxt}>{item.genre}</Text>
-                </View>
-              )}
-              {item.content && (
-                <Text style={styles.postText} numberOfLines={3}>{item.content}</Text>
-              )}
-              {item.price > 0 ? (
-                <View style={styles.pricePill}>
-                  <Text style={styles.pricePillTxt}>₦{item.price?.toLocaleString()}</Text>
-                </View>
-              ) : (
-                <View style={[styles.pricePill, { backgroundColor: THEME.green + "20" }]}>
-                  <Text style={[styles.pricePillTxt, { color: THEME.green }]}>FREE</Text>
-                </View>
-              )}
-            </View>
-          </View>
-        )}
-
-        {/* Research type */}
-        {item.type === "research" && (
-          <View style={styles.researchCard}>
-            <View style={styles.researchHeader}>
-              <Ionicons name="flask" size={14} color="#00D1FF" />
-              <Text style={styles.researchField}>{item.fieldOfStudy || item.category || "Research"}</Text>
-            </View>
-            <Text style={styles.postTitle} numberOfLines={2}>{item.title}</Text>
-            {item.content && (
-              <Text style={styles.postText} numberOfLines={3}>{item.content}</Text>
-            )}
-            <View style={styles.researchFooter}>
-              {item.institution && (
-                <View style={styles.researchTag}>
-                  <Ionicons name="business-outline" size={10} color={THEME.textMuted} />
-                  <Text style={styles.researchTagTxt}>{item.institution}</Text>
-                </View>
-              )}
-              {item.isPaid && (
-                <View style={[styles.researchTag, { backgroundColor: THEME.accentDim }]}>
-                  <Text style={[styles.researchTagTxt, { color: THEME.accent }]}>₦{item.price?.toLocaleString()}</Text>
-                </View>
-              )}
-            </View>
-          </View>
-        )}
-
-        {/* Default — discussion / article */}
-        {(item.type === "discussion" || item.type === "article" || !item.type) && (
-          <View>
-            {item.title && <Text style={styles.postTitle}>{item.title}</Text>}
-            {item.content && (
-              <Text style={styles.postText} numberOfLines={item.type === "article" ? 3 : 6}>
-                {item.content}
-              </Text>
-            )}
-            {(item.coverUrl || item.image) && (
-              <Image
-                source={{ uri: item.coverUrl || item.image }}
-                style={styles.postImage}
-                resizeMode="cover"
-              />
-            )}
-            {/* Article read time */}
-            {item.type === "article" && item.readTime && (
-              <View style={styles.readTimePill}>
-                <Ionicons name="time-outline" size={11} color={THEME.blue} />
-                <Text style={styles.readTimeTxt}>{item.readTime} min read</Text>
-              </View>
-            )}
-          </View>
-        )}
-
-        {/* Weave type */}
-        {item.type === "weave" && (
-          <View style={styles.weaveCard}>
-            <View style={styles.weaveHeader}>
-              <MaterialCommunityIcons name="feather" size={14} color="#F59E0B" />
-              <Text style={styles.weaveHeaderTxt}>Collaborative Weave</Text>
-            </View>
-            <Text style={styles.postTitle} numberOfLines={2}>{item.title}</Text>
-            {item.bookTitle && (
-              <Text style={styles.weaveBookRef}>📖 Based on: {item.bookTitle}</Text>
-            )}
-            <Text style={styles.weaveCollabCount}>
-              {item.collaborators || 1} {item.collaborators === 1 ? "weaver" : "weavers"}
-            </Text>
-          </View>
-        )}
-      </TouchableOpacity>
-
-      {/* MOOD TAG */}
-      {item.mood && (
-        <View style={styles.moodTag}>
-          <Text style={styles.moodTagTxt}>{item.mood}</Text>
-        </View>
-      )}
-
-      {/* REACTIONS */}
-      <ReactionStrip
-        postId={item.id}
-        uid={uid}
-        reactions={item.reactions || {}}
-      />
-
-      {/* ACTION BAR */}
-      <View style={styles.actionBar}>
-        {/* Like */}
-        <TouchableOpacity
-          style={styles.actionBtn}
-          onPress={() => toggleLike(item)}
-          activeOpacity={0.7}
-        >
-          <Animated.View>
-            <Ionicons
-              name={liked ? "heart" : "heart-outline"}
-              size={20}
-              color={liked ? THEME.red : THEME.textMuted}
-            />
-          </Animated.View>
-          <Text style={[styles.actionTxt, liked && { color: THEME.red }]}>
-            {item.likesCount || 0}
-          </Text>
-        </TouchableOpacity>
-
-        {/* Comment */}
-        <TouchableOpacity
-          style={styles.actionBtn}
-          onPress={() => setShowComment(!showComment)}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="chatbubble-outline" size={18} color={THEME.textMuted} />
-          <Text style={styles.actionTxt}>{item.commentsCount || 0}</Text>
-        </TouchableOpacity>
-
-        {/* View all comments */}
-        <TouchableOpacity
-          style={styles.actionBtn}
-          onPress={() => router.push(`/discussion/${item.id}/comments` as any)}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="arrow-redo-outline" size={18} color={THEME.textMuted} />
-          <Text style={styles.actionTxt}>View all</Text>
-        </TouchableOpacity>
-
-        {/* Share */}
-        <TouchableOpacity style={styles.actionBtn} onPress={onShare}>
-          <Ionicons name="share-social-outline" size={18} color={THEME.accent} />
-        </TouchableOpacity>
-
-        {/* Bookmark */}
-        <TouchableOpacity style={styles.actionBtn} onPress={handleBookmark}>
-          <Ionicons
-            name={bookmarked ? "bookmark" : "bookmark-outline"}
-            size={18}
-            color={bookmarked ? THEME.accent : THEME.textMuted}
-          />
-        </TouchableOpacity>
-      </View>
-
-      {/* QUICK COMMENT */}
-      {showComment && (
-        <QuickComment
-          postId={item.id}
-          uid={uid}
-          userPhoto={userPhoto}
-          onDone={() => setShowComment(false)}
-        />
-      )}
-    </Animated.View>
-  );
-});
-
 // ── NOTIFICATIONS MODAL ───────────────────────────────────────────────────
-const NotificationsModal = memo(({
-  visible, onClose, uid,
-}: {
+const NotificationsModal = memo(({ visible, onClose, uid }: {
   visible: boolean; onClose: () => void; uid: string;
 }) => {
   const [notifications, setNotifications] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading,       setLoading]       = useState(true);
 
   useEffect(() => {
     if (!visible || !uid) return;
@@ -626,24 +281,37 @@ const NotificationsModal = memo(({
     return () => unsub();
   }, [visible, uid]);
 
-  const markAllRead = async () => {
-    try {
-      await updateDoc(doc(db, "users", uid), { hasUnread: false });
-    } catch (e) { console.error(e); }
-  };
-
+  // Mark all individual notifications as read
   useEffect(() => {
-    if (visible) markAllRead();
-  }, [visible]);
+    if (!visible || !uid) return;
+    const markRead = async () => {
+      try {
+        const snap = await getDocs(
+          query(
+            collection(db, "users", uid, "notifications"),
+            where("read", "==", false)
+          )
+        );
+        snap.docs.forEach((d) => {
+          updateDoc(doc(db, "users", uid, "notifications", d.id), { read: true });
+        });
+        await updateDoc(doc(db, "users", uid), { hasUnread: false });
+      } catch (e) { console.error(e); }
+    };
+    markRead();
+  }, [visible, uid]);
 
   const NOTIF_ICONS: Record<string, { icon: string; color: string }> = {
-    like:     { icon: "heart",           color: THEME.red        },
-    comment:  { icon: "chatbubble",      color: THEME.blue       },
-    follow:   { icon: "person-add",      color: THEME.purple     },
-    purchase: { icon: "cart",            color: THEME.green      },
-    review:   { icon: "shield-checkmark",color: THEME.accent     },
-    mention:  { icon: "at-circle",       color: THEME.purpleLight},
-    default:  { icon: "notifications",   color: THEME.textMuted  },
+    like:          { icon: "heart",            color: THEME.red         },
+    comment:       { icon: "chatbubble",       color: THEME.blue        },
+    follow:        { icon: "person-add",       color: THEME.purple      },
+    purchase:      { icon: "cart",             color: THEME.green       },
+    review:        { icon: "shield-checkmark", color: THEME.accent      },
+    mention:       { icon: "at-circle",        color: THEME.purpleLight },
+    weave:         { icon: "feather",          color: "#F59E0B"         },
+    book_approved: { icon: "checkmark-circle", color: THEME.green       },
+    book_rejected: { icon: "close-circle",     color: THEME.red         },
+    default:       { icon: "notifications",    color: THEME.textMuted   },
   };
 
   return (
@@ -692,22 +360,444 @@ const NotificationsModal = memo(({
   );
 });
 
+// ── POST CARD ─────────────────────────────────────────────────────────────
+const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePress }: any) => {
+  const router     = useRouter();
+  const liked      = item.likedBy?.includes(uid);
+  const isOwner    = uid === item.userId || uid === item.authorId;
+  const typeConfig = TYPE_CONFIG[item.type] || TYPE_CONFIG.discussion;
+  const [showComment, setShowComment] = useState(false);
+  const [bookmarked,  setBookmarked]  = useState(false);
+
+  const fadeAnim   = useRef(new Animated.Value(0)).current;
+  const translateY = useRef(new Animated.Value(20)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim,   { toValue: 1, duration: 400, useNativeDriver: true }),
+      Animated.timing(translateY, { toValue: 0, duration: 400, useNativeDriver: true }),
+    ]).start();
+  }, []);
+
+  const handleBookmark = async () => {
+    setBookmarked(!bookmarked);
+    try {
+      await updateDoc(doc(db, "users", uid, "bookmarks", item.id), {
+        postId:  item.id,
+        savedAt: serverTimestamp(),
+      });
+    } catch (e) { console.error(e); }
+  };
+
+  const onShare = async () => {
+    try {
+      await Share.share({
+        message: `${item.title || item.content?.slice(0, 80) || "Check this out"} — Writha`,
+      });
+    } catch (e) { console.error(e); }
+  };
+
+  // ── Navigate to correct detail screen ───────────────────────────
+  const navigateToPost = () => {
+    if (item.type === "book" || item.type === "book_update") {
+      router.push(`/book/${item.bookId || item.originalId || item.id}` as any);
+    } else if (item.type === "research") {
+      router.push(`/research/${item.originalId || item.id}` as any);
+    } else if (item.type === "weave") {
+      router.push(`/weave/${item.originalId || item.id}` as any);
+    } else {
+      router.push(`/discussion/${item.id}/comments` as any);
+    }
+  };
+
+  // ── Three dots menu ─────────────────────────────────────────────
+  const handleSettings = () => {
+    const baseOptions: any[] = [
+      {
+        text: "📤 Share",
+        onPress: onShare,
+      },
+      {
+        text: bookmarked ? "🔖 Saved" : "🔖 Bookmark",
+        onPress: handleBookmark,
+      },
+      {
+        text: "🚫 Hide Post",
+        onPress: () => showAlert("Hidden", "You won't see this post again.", [{ text: "OK" }]),
+      },
+      {
+        text: "⚠️ Report",
+        onPress: () => showAlert("Reported", "Thank you for keeping Writha safe.", [{ text: "OK" }]),
+      },
+    ];
+
+    // Owner options
+    if (isOwner) {
+      // Weave owners can edit
+      if (item.type === "weave") {
+        baseOptions.unshift({
+          text: "✏️ Edit Weave",
+          onPress: () => router.push(`/weave/edit?id=${item.originalId || item.id}` as any),
+        });
+      }
+      // All owners can delete
+      baseOptions.unshift({
+        text: "🗑️ Delete Post",
+        style: "destructive",
+        onPress: () =>
+          showAlert(
+            "Delete Post",
+            "This cannot be undone.",
+            [
+              { text: "Cancel", style: "cancel" },
+              {
+                text: "Delete",
+                style: "destructive",
+                onPress: async () => {
+                  try {
+                    await deleteDoc(doc(db, "feed", item.id));
+                    // Also delete from weaves collection if it's a weave
+                    if (item.type === "weave" && item.originalId) {
+                      await deleteDoc(doc(db, "weaves", item.originalId));
+                    }
+                  } catch (e) { console.error(e); }
+                },
+              },
+            ]
+          ),
+      });
+    }
+
+    baseOptions.push({ text: "Cancel", style: "cancel" });
+
+    showAlert("Post Options", "", baseOptions);
+  };
+
+  if (item.type === "ad") return <AdCard item={item} />;
+
+  const authorName   = item.userName   || item.authorName  || item.displayName || item.fullName || "Scholar";
+  const authorHandle = item.userHandle || item.authorUsername || item.username  || authorName.toLowerCase().replace(/\s/g, "");
+  const authorPhoto  =
+    item.userPhoto   || item.authorPhoto || item.photoURL ||
+    `https://ui-avatars.com/api/?name=${encodeURIComponent(authorName)}&background=170D2E&color=FFD700&bold=true`;
+
+  // ── ADMIN CARD ──────────────────────────────────────────────────
+  if (item.type === "admin") {
+    return (
+      <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY }] }}>
+        <LinearGradient
+          colors={["#2D1B69", "#170D2E"]}
+          style={styles.adminCard}
+          start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+        >
+          <View style={styles.adminCardHeader}>
+            <View style={styles.adminBadge}>
+              <MaterialCommunityIcons name="shield-star" size={14} color={THEME.accent} />
+              <Text style={styles.adminBadgeTxt}>WRITHA OFFICIAL</Text>
+            </View>
+            <Text style={styles.postTime}>{formatTime(item.createdAt)}</Text>
+          </View>
+          <Text style={styles.adminTitle}>{item.title}</Text>
+          {item.content && <Text style={styles.adminContent}>{item.content}</Text>}
+          {(item.coverUrl || item.image) && (
+            <Image source={{ uri: item.coverUrl || item.image }} style={styles.postImage} />
+          )}
+        </LinearGradient>
+      </Animated.View>
+    );
+  }
+
+  return (
+    <Animated.View style={[styles.card, { opacity: fadeAnim, transform: [{ translateY }] }]}>
+
+      {item.isPinned && (
+        <View style={styles.pinnedStrip}>
+          <Ionicons name="pin" size={11} color={THEME.accent} />
+          <Text style={styles.pinnedTxt}>PINNED</Text>
+        </View>
+      )}
+
+      <View style={[styles.typeBadge, { backgroundColor: typeConfig.bg }]}>
+        <Ionicons name={typeConfig.icon as any} size={11} color={typeConfig.color} />
+        <Text style={[styles.typeBadgeTxt, { color: typeConfig.color }]}>{typeConfig.label}</Text>
+      </View>
+
+      {/* AUTHOR ROW */}
+      <View style={styles.authorRow}>
+        <TouchableOpacity
+          style={styles.authorLeft}
+          onPress={() => onProfilePress(item.userId || item.authorId)}
+          activeOpacity={0.8}
+        >
+          <LinearGradient
+            colors={[THEME.accent, THEME.purpleLight, THEME.purple]}
+            style={styles.avatarRing}
+            start={{ x: 0, y: 1 }} end={{ x: 1, y: 0 }}
+          >
+            <View style={styles.avatarInner}>
+              <Image source={{ uri: authorPhoto }} style={styles.avatar} />
+            </View>
+          </LinearGradient>
+          <View style={styles.authorInfo}>
+            <View style={styles.authorNameRow}>
+              <Text style={styles.authorName}>{authorName}</Text>
+              {item.isAuthor && (
+                <MaterialCommunityIcons name="check-decagram" size={14} color={THEME.accent} style={{ marginLeft: 4 }} />
+              )}
+              {item.isAdmin && (
+                <MaterialCommunityIcons name="shield-star" size={14} color={THEME.purple} style={{ marginLeft: 4 }} />
+              )}
+            </View>
+            <View style={styles.authorMeta}>
+              <Text style={styles.authorHandle}>@{authorHandle}</Text>
+              <Text style={styles.authorDot}>·</Text>
+              <Text style={styles.postTime}>{formatTime(item.createdAt)}</Text>
+            </View>
+          </View>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.moreBtn}
+          onPress={handleSettings}
+          hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+        >
+          <Ionicons name="ellipsis-horizontal" size={20} color={THEME.textMuted} />
+        </TouchableOpacity>
+      </View>
+
+      {/* POST CONTENT */}
+      <TouchableOpacity onPress={navigateToPost} activeOpacity={0.9}>
+
+        {/* Book */}
+        {(item.type === "book" || item.type === "book_update") && (
+          <View style={styles.bookPreviewRow}>
+            <Image
+              source={{ uri: item.coverUrl || item.cover || "https://picsum.photos/80/120" }}
+              style={styles.bookPreviewCover}
+            />
+            <View style={styles.bookPreviewInfo}>
+              <Text style={styles.postTitle} numberOfLines={2}>{item.title}</Text>
+              {item.genre && (
+                <View style={styles.genrePill}>
+                  <Text style={styles.genrePillTxt}>{item.genre}</Text>
+                </View>
+              )}
+              {item.content && (
+                <Text style={styles.postText} numberOfLines={3}>{item.content}</Text>
+              )}
+              {item.price > 0 ? (
+                <View style={styles.pricePill}>
+                  <Text style={styles.pricePillTxt}>₦{item.price?.toLocaleString()}</Text>
+                </View>
+              ) : (
+                <View style={[styles.pricePill, { backgroundColor: THEME.green + "20" }]}>
+                  <Text style={[styles.pricePillTxt, { color: THEME.green }]}>FREE</Text>
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+
+        {/* Research */}
+        {item.type === "research" && (
+          <View style={styles.researchCard}>
+            <View style={styles.researchHeader}>
+              <Ionicons name="flask" size={14} color="#00D1FF" />
+              <Text style={styles.researchField}>{item.fieldOfStudy || item.category || "Research"}</Text>
+            </View>
+            <Text style={styles.postTitle} numberOfLines={2}>{item.title}</Text>
+            {item.content && (
+              <Text style={styles.postText} numberOfLines={3}>{item.content}</Text>
+            )}
+            <View style={styles.researchFooter}>
+              {item.institution && (
+                <View style={styles.researchTag}>
+                  <Ionicons name="business-outline" size={10} color={THEME.textMuted} />
+                  <Text style={styles.researchTagTxt}>{item.institution}</Text>
+                </View>
+              )}
+              {item.isPaid && (
+                <View style={[styles.researchTag, { backgroundColor: THEME.accentDim }]}>
+                  <Text style={[styles.researchTagTxt, { color: THEME.accent }]}>₦{item.price?.toLocaleString()}</Text>
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+
+        {/* Discussion / Article */}
+        {(item.type === "discussion" || item.type === "article" || !item.type) && (
+          <View>
+            {item.title && <Text style={styles.postTitle}>{item.title}</Text>}
+            {item.content && (
+              <Text style={styles.postText} numberOfLines={item.type === "article" ? 3 : 6}>
+                {item.content}
+              </Text>
+            )}
+            {(item.coverUrl || item.image) && (
+              <Image
+                source={{ uri: item.coverUrl || item.image }}
+                style={styles.postImage}
+                resizeMode="cover"
+              />
+            )}
+            {item.type === "article" && item.readTime && (
+              <View style={styles.readTimePill}>
+                <Ionicons name="time-outline" size={11} color={THEME.blue} />
+                <Text style={styles.readTimeTxt}>{item.readTime} min read</Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* ── WEAVE CARD — shows actual type ── */}
+        {item.type === "weave" && (
+          <View style={[styles.weaveCard, {
+            borderColor: (WEAVE_TYPE_COLOR[item.weaveType] || "#F59E0B") + "30",
+          }]}>
+            {/* Weave type header */}
+            <View style={styles.weaveHeader}>
+              <MaterialCommunityIcons
+                name={(WEAVE_TYPE_ICON[item.weaveType] || "feather") as any}
+                size={14}
+                color={WEAVE_TYPE_COLOR[item.weaveType] || "#F59E0B"}
+              />
+              <Text style={[styles.weaveTypeTxt, {
+                color: WEAVE_TYPE_COLOR[item.weaveType] || "#F59E0B",
+              }]}>
+                {(item.weaveType || "WEAVE").toUpperCase()}
+              </Text>
+            </View>
+
+            {/* Book reference */}
+            {item.bookTitle && (
+              <View style={styles.weaveBookRefRow}>
+                <Ionicons name="book-outline" size={11} color={THEME.textMuted} />
+                <Text style={styles.weaveBookRef} numberOfLines={1}>
+                  {item.bookTitle}
+                  {item.bookAuthor ? ` · ${item.bookAuthor}` : ""}
+                </Text>
+              </View>
+            )}
+
+            {/* Title or content preview */}
+            {item.title
+              ? <Text style={styles.postTitle} numberOfLines={2}>{item.title}</Text>
+              : <Text style={styles.postText} numberOfLines={3}>{item.content}</Text>
+            }
+
+            {/* Rating for Critique weaves */}
+            {item.weaveType === "Critique" && item.rating && (
+              <View style={styles.weaveRatingRow}>
+                <Text style={[styles.weaveRating, { color: WEAVE_TYPE_COLOR["Critique"] }]}>
+                  {item.rating}/10
+                </Text>
+                <Text style={styles.weaveRatingLabel}>
+                  {Number(item.rating) >= 9 ? "Masterpiece"        :
+                   Number(item.rating) >= 7 ? "Highly Recommended" :
+                   Number(item.rating) >= 5 ? "Worth Reading"      :
+                                              "Has Merit"          }
+                </Text>
+              </View>
+            )}
+
+            {/* External book badge */}
+            {item.isExternalBook && (
+              <View style={styles.externalBadge}>
+                <Ionicons name="globe-outline" size={10} color={THEME.textMuted} />
+                <Text style={styles.externalBadgeTxt}>External Reference</Text>
+              </View>
+            )}
+          </View>
+        )}
+      </TouchableOpacity>
+
+      {item.mood && (
+        <View style={styles.moodTag}>
+          <Text style={styles.moodTagTxt}>{item.mood}</Text>
+        </View>
+      )}
+
+      <ReactionStrip postId={item.id} uid={uid} reactions={item.reactions || {}} />
+
+      {/* ACTION BAR */}
+      <View style={styles.actionBar}>
+        <TouchableOpacity
+          style={styles.actionBtn}
+          onPress={() => toggleLike(item)}
+          activeOpacity={0.7}
+        >
+          <Ionicons
+            name={liked ? "heart" : "heart-outline"}
+            size={20}
+            color={liked ? THEME.red : THEME.textMuted}
+          />
+          <Text style={[styles.actionTxt, liked && { color: THEME.red }]}>
+            {item.likesCount || 0}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.actionBtn}
+          onPress={() => setShowComment(!showComment)}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="chatbubble-outline" size={18} color={THEME.textMuted} />
+          <Text style={styles.actionTxt}>{item.commentsCount || 0}</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.actionBtn}
+          onPress={navigateToPost}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="arrow-redo-outline" size={18} color={THEME.textMuted} />
+          <Text style={styles.actionTxt}>View</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.actionBtn} onPress={onShare}>
+          <Ionicons name="share-social-outline" size={18} color={THEME.accent} />
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.actionBtn} onPress={handleBookmark}>
+          <Ionicons
+            name={bookmarked ? "bookmark" : "bookmark-outline"}
+            size={18}
+            color={bookmarked ? THEME.accent : THEME.textMuted}
+          />
+        </TouchableOpacity>
+      </View>
+
+      {showComment && (
+        <QuickComment
+          postId={item.id}
+          uid={uid}
+          userPhoto={userPhoto}
+          onDone={() => setShowComment(false)}
+        />
+      )}
+    </Animated.View>
+  );
+});
+
 // ── MAIN SCREEN ───────────────────────────────────────────────────────────
 export default function GlobalFeedTab() {
   const router = useRouter();
-  const uid = auth.currentUser?.uid;
+  const uid    = auth.currentUser?.uid;
 
-  const [posts, setPosts] = useState<any[]>([]);
-  const [userData, setUserData] = useState<any>(null);
+  const [posts,       setPosts]       = useState<any[]>([]);
+  const [userData,    setUserData]    = useState<any>(null);
   const [activeUsers, setActiveUsers] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [lastDoc, setLastDoc] = useState<any>(null);
+  const [loading,     setLoading]     = useState(true);
+  const [refreshing,  setRefreshing]  = useState(false);
+  const [lastDoc,     setLastDoc]     = useState<any>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [filterTab, setFilterTab] = useState("all");
-  const [showNotifs, setShowNotifs] = useState(false);
+  const [filterTab,   setFilterTab]   = useState("all");
+  const [showNotifs,  setShowNotifs]  = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
-  const scrollY = useRef(new Animated.Value(0)).current;
+
+  const scrollY          = useRef(new Animated.Value(0)).current;
+  const feedUnsubRef     = useRef<(() => void) | null>(null);
 
   // ── USER DATA ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -718,7 +808,7 @@ export default function GlobalFeedTab() {
     return () => unsub();
   }, [uid]);
 
-  // ── UNREAD NOTIFICATION COUNT ─────────────────────────────────────
+  // ── UNREAD COUNT ───────────────────────────────────────────────────
   useEffect(() => {
     if (!uid) return;
     const q = query(
@@ -729,7 +819,7 @@ export default function GlobalFeedTab() {
     return () => unsub();
   }, [uid]);
 
-  // ── ACTIVE USERS (Story rings) ────────────────────────────────────
+  // ── ACTIVE USERS ───────────────────────────────────────────────────
   useEffect(() => {
     const q = query(
       collection(db, "users"),
@@ -742,8 +832,11 @@ export default function GlobalFeedTab() {
     return () => unsub();
   }, []);
 
-  // ── FEED QUERY ────────────────────────────────────────────────────
-  useEffect(() => {
+  // ── FETCH FEED ─────────────────────────────────────────────────────
+  const fetchFeed = useCallback(() => {
+    // Unsubscribe previous listener
+    if (feedUnsubRef.current) feedUnsubRef.current();
+
     setLoading(true);
     const q = query(
       collection(db, "feed"),
@@ -755,9 +848,7 @@ export default function GlobalFeedTab() {
       q,
       (snap) => {
         const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        // Inject sponsored ads every 5 posts
-        const withAds = injectAds(items);
-        setPosts(withAds);
+        setPosts(injectAds(items));
         setLastDoc(snap.docs[snap.docs.length - 1]);
         setLoading(false);
         setRefreshing(false);
@@ -769,27 +860,36 @@ export default function GlobalFeedTab() {
       }
     );
 
-    return () => unsub();
+    feedUnsubRef.current = unsub;
+    return unsub;
   }, []);
+
+  useEffect(() => {
+    const unsub = fetchFeed();
+    return () => unsub();
+  }, [fetchFeed]);
+
+  // ── REFRESH ────────────────────────────────────────────────────────
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    setLastDoc(null);
+    fetchFeed();
+  }, [fetchFeed]);
 
   // ── AD INJECTION ──────────────────────────────────────────────────
   const injectAds = (items: any[]): any[] => {
     const adPlaceholder = {
-      id: `ad_${Date.now()}`,
-      type: "ad",
-      title: "Grow Your Readership on Writha",
-      content: "Reach thousands of active readers. Advertise your book today.",
+      id:       `ad_${Date.now()}`,
+      type:     "ad",
+      title:    "Grow Your Readership on Writha",
+      content:  "Reach thousands of active readers. Advertise your book today.",
       ctaLabel: "Get Started",
     };
     if (items.length < 5) return items;
-    return [
-      ...items.slice(0, 5),
-      adPlaceholder,
-      ...items.slice(5),
-    ];
+    return [...items.slice(0, 5), adPlaceholder, ...items.slice(5)];
   };
 
-  // ── LOAD MORE ─────────────────────────────────────────────────────
+  // ── LOAD MORE ──────────────────────────────────────────────────────
   const loadMore = async () => {
     if (!lastDoc || loadingMore) return;
     setLoadingMore(true);
@@ -800,33 +900,30 @@ export default function GlobalFeedTab() {
         startAfter(lastDoc),
         limit(PAGE_SIZE)
       );
-      const snap = await getDocs(q);
+      const snap     = await getDocs(q);
       const newItems = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       setPosts((prev) => [...prev, ...newItems]);
       setLastDoc(snap.docs[snap.docs.length - 1]);
     } catch (e) { console.error(e); } finally { setLoadingMore(false); }
   };
 
-  // ── LIKE ──────────────────────────────────────────────────────────
+  // ── LIKE ───────────────────────────────────────────────────────────
   const toggleLike = useCallback(async (post: any) => {
     if (!uid) return;
     const liked = post.likedBy?.includes(uid);
     try {
       await updateDoc(doc(db, "feed", post.id), {
-        likedBy: liked ? arrayRemove(uid) : arrayUnion(uid),
-        likesCount: liked
-          ? Math.max((post.likesCount || 1) - 1, 0)
-          : (post.likesCount || 0) + 1,
+        likedBy:    liked ? arrayRemove(uid) : arrayUnion(uid),
+        likesCount: increment(liked ? -1 : 1),
       });
-      // Send notification to post author if liking
       if (!liked && post.userId && post.userId !== uid) {
         await addDoc(collection(db, "users", post.userId, "notifications"), {
-          type: "like",
-          message: `${userData?.displayName || "Someone"} liked your post`,
-          postId: post.id,
+          type:       "like",
+          message:    `${userData?.displayName || "Someone"} liked your post`,
+          postId:     post.id,
           fromUserId: uid,
-          read: false,
-          createdAt: serverTimestamp(),
+          read:       false,
+          createdAt:  serverTimestamp(),
         });
         await updateDoc(doc(db, "users", post.userId), { hasUnread: true });
       }
@@ -836,13 +933,13 @@ export default function GlobalFeedTab() {
   // ── FILTERED POSTS ────────────────────────────────────────────────
   const filteredPosts = filterTab === "all"
     ? posts
-    : posts.filter((p) => p.type === filterTab || (filterTab === "book" && p.type === "book_update"));
+    : posts.filter((p) =>
+        p.type === filterTab ||
+        (filterTab === "book" && p.type === "book_update")
+      );
 
-  // ── HEADER OPACITY ON SCROLL ──────────────────────────────────────
   const headerOpacity = scrollY.interpolate({
-    inputRange: [0, 60],
-    outputRange: [1, 0.95],
-    extrapolate: "clamp",
+    inputRange: [0, 60], outputRange: [1, 0.95], extrapolate: "clamp",
   });
 
   if (loading) {
@@ -865,7 +962,6 @@ export default function GlobalFeedTab() {
           <Text style={styles.brandMain}>Pulse</Text>
         </View>
         <View style={styles.headerRight}>
-          {/* Notifications */}
           <TouchableOpacity
             style={styles.headerIconBtn}
             onPress={() => setShowNotifs(true)}
@@ -879,8 +975,6 @@ export default function GlobalFeedTab() {
               </View>
             )}
           </TouchableOpacity>
-
-          {/* Profile avatar */}
           <TouchableOpacity
             style={styles.headerAvatarBtn}
             onPress={() => router.push(`/profile/${uid}` as any)}
@@ -920,7 +1014,6 @@ export default function GlobalFeedTab() {
               <View style={styles.storySection}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                   <View style={styles.storyRow}>
-                    {/* My own story */}
                     <TouchableOpacity style={styles.storyItem} activeOpacity={0.8}>
                       <View style={styles.myStoryRing}>
                         <Image
@@ -961,7 +1054,10 @@ export default function GlobalFeedTab() {
                   style={[styles.filterTab, filterTab === tab.key && styles.filterTabActive]}
                   onPress={() => setFilterTab(tab.key)}
                 >
-                  <Text style={[styles.filterTabTxt, filterTab === tab.key && styles.filterTabTxtActive]}>
+                  <Text style={[
+                    styles.filterTabTxt,
+                    filterTab === tab.key && styles.filterTabTxtActive,
+                  ]}>
                     {tab.label}
                   </Text>
                 </TouchableOpacity>
@@ -974,6 +1070,7 @@ export default function GlobalFeedTab() {
             item={item}
             uid={uid}
             userPhoto={userData?.photoURL || userData?.profilePic}
+            userData={userData}
             toggleLike={toggleLike}
             onProfilePress={(userId: string) => router.push(`/profile/${userId}` as any)}
           />
@@ -997,13 +1094,12 @@ export default function GlobalFeedTab() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => setRefreshing(true)}
+            onRefresh={onRefresh}
             tintColor={THEME.accent}
           />
         }
       />
 
-      {/* NOTIFICATIONS MODAL */}
       <NotificationsModal
         visible={showNotifs}
         onClose={() => setShowNotifs(false)}
@@ -1014,170 +1110,131 @@ export default function GlobalFeedTab() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: THEME.bg },
-  center: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: THEME.bg },
-
-  // Header
-  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  brandSub: { color: THEME.purple, fontSize: 10, fontWeight: "900", letterSpacing: 4 },
-  brandMain: { color: THEME.text, fontSize: 40, fontWeight: "900", letterSpacing: -2, marginTop: -4 },
-  headerRight: { flexDirection: "row", alignItems: "center", gap: 10 },
-  headerIconBtn: { width: 42, height: 42, borderRadius: 14, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: THEME.border },
-  notifBadge: { position: "absolute", top: 6, right: 6, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: THEME.red, justifyContent: "center", alignItems: "center", paddingHorizontal: 2 },
-  notifBadgeTxt: { color: "#fff", fontSize: 8, fontWeight: "900" },
-  headerAvatarBtn: {},
-  headerAvatarRing: { padding: 2, borderRadius: 16 },
-  headerAvatarImg: { width: 36, height: 36, borderRadius: 13, borderWidth: 2, borderColor: THEME.bg },
-
-  // Stories
-  storySection: { marginBottom: 8 },
-  storyRow: { flexDirection: "row", paddingHorizontal: 16, gap: 14, paddingVertical: 4 },
-  storyItem: { alignItems: "center", width: 60 },
-  storyRing: { width: 58, height: 58, borderRadius: 18, justifyContent: "center", alignItems: "center" },
-  storyInner: { width: 52, height: 52, borderRadius: 16, backgroundColor: THEME.bg, justifyContent: "center", alignItems: "center" },
-  storyAvatar: { width: 48, height: 48, borderRadius: 15 },
-  storyName: { color: THEME.textMuted, fontSize: 10, marginTop: 5, fontWeight: "700", textAlign: "center" },
-  myStoryRing: { width: 58, height: 58, borderRadius: 18, backgroundColor: THEME.ui2, justifyContent: "center", alignItems: "center", borderWidth: 2, borderColor: THEME.border, position: "relative" },
-  myStoryAdd: { position: "absolute", bottom: -2, right: -2, width: 18, height: 18, borderRadius: 6, backgroundColor: THEME.accent, justifyContent: "center", alignItems: "center", borderWidth: 2, borderColor: THEME.bg },
-
-  // Filter tabs
-  filterScroll: { marginBottom: 8 },
-  filterContent: { paddingHorizontal: 16, gap: 8 },
-  filterTab: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.border },
-  filterTabActive: { backgroundColor: THEME.accent, borderColor: THEME.accent },
-  filterTabTxt: { color: THEME.textMuted, fontWeight: "700", fontSize: 12 },
-  filterTabTxtActive: { color: "#000" },
-
-  // Feed
-  listContent: { paddingHorizontal: 14, paddingBottom: 120 },
-
-  // Card
-  card: { backgroundColor: THEME.ui, borderRadius: 24, padding: 18, marginBottom: 16, borderWidth: 1, borderColor: THEME.border },
-
-  // Pinned
-  pinnedStrip: { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 8 },
-  pinnedTxt: { color: THEME.accent, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
-
-  // Type badge
-  typeBadge: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 8, alignSelf: "flex-start", marginBottom: 12 },
-  typeBadgeTxt: { fontSize: 9, fontWeight: "900", letterSpacing: 1 },
-
-  // Author
-  authorRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
-  authorLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
-  avatarRing: { width: 46, height: 46, borderRadius: 15, justifyContent: "center", alignItems: "center" },
-  avatarInner: { width: 40, height: 40, borderRadius: 13, backgroundColor: THEME.bg, justifyContent: "center", alignItems: "center" },
-  avatar: { width: 36, height: 36, borderRadius: 11 },
-  authorInfo: { flex: 1 },
-  authorNameRow: { flexDirection: "row", alignItems: "center" },
-  authorName: { color: THEME.text, fontWeight: "800", fontSize: 14 },
-  authorMeta: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 2 },
-  authorHandle: { color: THEME.accent, fontSize: 11, fontWeight: "700" },
-  authorDot: { color: THEME.textMuted, fontSize: 11 },
-  postTime: { color: THEME.textMuted, fontSize: 11 },
-  moreBtn: { padding: 4 },
-
-  // Content
-  postTitle: { color: THEME.text, fontSize: 18, fontWeight: "900", marginBottom: 8, lineHeight: 24 },
-  postText: { color: "#B0A8C0", fontSize: 14, lineHeight: 22, marginBottom: 12 },
-  postImage: { width: "100%", height: 210, borderRadius: 18, marginBottom: 12 },
-
-  // Book preview
-  bookPreviewRow: { flexDirection: "row", gap: 14, marginBottom: 8 },
-  bookPreviewCover: { width: 80, height: 115, borderRadius: 12, borderWidth: 2, borderColor: THEME.accent + "40" },
-  bookPreviewInfo: { flex: 1 },
-  genrePill: { backgroundColor: THEME.ui3, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, alignSelf: "flex-start", marginBottom: 6 },
-  genrePillTxt: { color: THEME.purpleLight, fontSize: 9, fontWeight: "900" },
-  pricePill: { backgroundColor: THEME.accentDim, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: "flex-start", marginTop: 6 },
-  pricePillTxt: { color: THEME.accent, fontSize: 11, fontWeight: "900" },
-
-  // Research
-  researchCard: { backgroundColor: "rgba(0,209,255,0.05)", borderRadius: 16, padding: 14, borderWidth: 1, borderColor: "rgba(0,209,255,0.15)" },
-  researchHeader: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
-  researchField: { color: "#00D1FF", fontSize: 10, fontWeight: "900", letterSpacing: 1 },
-  researchFooter: { flexDirection: "row", gap: 8, marginTop: 8 },
-  researchTag: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: THEME.ui2, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
-  researchTagTxt: { color: THEME.textMuted, fontSize: 10 },
-
-  // Article
-  readTimePill: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "rgba(56,189,248,0.1)", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: "flex-start" },
-  readTimeTxt: { color: THEME.blue, fontSize: 10, fontWeight: "700" },
-
-  // Weave
-  weaveCard: { backgroundColor: "rgba(245,158,11,0.06)", borderRadius: 16, padding: 14, borderWidth: 1, borderColor: "rgba(245,158,11,0.15)" },
-  weaveHeader: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
-  weaveHeaderTxt: { color: "#F59E0B", fontSize: 10, fontWeight: "900", letterSpacing: 1 },
-  weaveBookRef: { color: THEME.textMuted, fontSize: 12, marginTop: 4 },
-  weaveCollabCount: { color: "#F59E0B", fontSize: 11, fontWeight: "800", marginTop: 6 },
-
-  // Admin card
-  adminCard: { borderRadius: 24, padding: 20, marginBottom: 16, borderWidth: 1, borderColor: THEME.purple + "50" },
-  adminCardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  adminBadge: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accentDim, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
-  adminBadgeTxt: { color: THEME.accent, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
-  adminTitle: { color: THEME.text, fontSize: 18, fontWeight: "900", marginBottom: 8 },
-  adminContent: { color: "#B0A8C0", fontSize: 14, lineHeight: 22 },
-
-  // Mood tag
-  moodTag: { backgroundColor: THEME.ui2, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: "flex-start", marginBottom: 10 },
-  moodTagTxt: { color: THEME.purpleLight, fontSize: 11, fontWeight: "700" },
-
-  // Reactions
-  reactionWrap: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 10, position: "relative" },
-  reactionPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: THEME.ui2, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10, borderWidth: 1, borderColor: THEME.border },
-  reactionPillActive: { borderColor: THEME.accent, backgroundColor: THEME.accentDim },
-  reactionEmoji: { fontSize: 13 },
-  reactionCount: { color: THEME.textMuted, fontSize: 11, fontWeight: "700" },
-  reactionAddBtn: { width: 30, height: 26, borderRadius: 10, backgroundColor: THEME.ui2, justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: THEME.border },
-  reactionAddTxt: { color: THEME.textMuted, fontSize: 16, fontWeight: "900", marginTop: -2 },
-  reactionPicker: { position: "absolute", bottom: 36, left: 0, flexDirection: "row", gap: 4, backgroundColor: THEME.ui3, borderRadius: 16, padding: 8, borderWidth: 1, borderColor: THEME.border, zIndex: 100 },
-  reactionPickerBtn: { padding: 4 },
-  reactionPickerEmoji: { fontSize: 22 },
-
-  // Action bar
-  actionBar: { flexDirection: "row", alignItems: "center", gap: 4, paddingTop: 12, borderTopWidth: 1, borderTopColor: THEME.border },
-  actionBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 6, borderRadius: 10 },
-  actionTxt: { color: THEME.textMuted, fontSize: 13, fontWeight: "700" },
-
-  // Quick comment
-  quickComment: { flexDirection: "row", gap: 10, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: THEME.border, alignItems: "flex-end" },
-  quickCommentAvatar: { width: 30, height: 30, borderRadius: 10 },
-  quickCommentAvatarFallback: { backgroundColor: THEME.purple, justifyContent: "center", alignItems: "center" },
-  quickCommentInput: { flex: 1, flexDirection: "row", alignItems: "flex-end", backgroundColor: THEME.ui2, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 8, gap: 8, borderWidth: 1, borderColor: THEME.border },
-  quickCommentTxt: { flex: 1, color: THEME.text, fontSize: 13, maxHeight: 80 },
-
-  // Ad card
-  adCard: { backgroundColor: THEME.ui, borderRadius: 20, overflow: "hidden", marginBottom: 16, borderWidth: 1, borderColor: THEME.border },
-  adLabel: { flexDirection: "row", alignItems: "center", gap: 4, padding: 10, paddingBottom: 0 },
-  adLabelTxt: { color: THEME.textMuted, fontSize: 10, fontWeight: "600" },
-  adImage: { width: "100%", height: 160 },
-  adBody: { padding: 14 },
-  adTitle: { color: THEME.text, fontWeight: "800", fontSize: 15, marginBottom: 4 },
-  adContent: { color: THEME.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 12 },
-  adCTA: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accent, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, alignSelf: "flex-start" },
-  adCTATxt: { color: "#000", fontWeight: "900", fontSize: 12 },
-
-  // Load more
-  loadMoreIndicator: { paddingVertical: 20, alignItems: "center" },
-
-  // Empty
-  emptyState: { paddingVertical: 80, alignItems: "center" },
-  emptyTitle: { color: THEME.text, fontSize: 18, fontWeight: "800", marginTop: 16 },
-  emptySub: { color: THEME.textMuted, fontSize: 13, marginTop: 8, textAlign: "center", lineHeight: 20 },
-
-  // Notifications modal
-  notifModal: { flex: 1, backgroundColor: THEME.bg },
-  notifHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, paddingTop: 60, borderBottomWidth: 1, borderBottomColor: THEME.border },
-  notifTitle: { color: THEME.text, fontSize: 22, fontWeight: "900" },
-  notifCloseBtn: { width: 36, height: 36, borderRadius: 12, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center" },
-  notifLoader: { flex: 1, justifyContent: "center", alignItems: "center" },
-  notifEmpty: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12 },
-  notifEmptyTxt: { color: THEME.textMuted, fontSize: 16, fontWeight: "600" },
-  notifItem: { flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderBottomWidth: 1, borderBottomColor: THEME.border },
-  notifItemUnread: { backgroundColor: THEME.accentDim },
-  notifIconCircle: { width: 40, height: 40, borderRadius: 13, justifyContent: "center", alignItems: "center" },
-  notifContent: { flex: 1 },
-  notifItemTxt: { color: THEME.text, fontSize: 13, lineHeight: 18 },
-  notifItemTime: { color: THEME.textMuted, fontSize: 11, marginTop: 3 },
-  unreadDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: THEME.accent },
+  container:                { flex: 1, backgroundColor: THEME.bg },
+  center:                   { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: THEME.bg },
+  header:                   { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  brandSub:                 { color: THEME.purple, fontSize: 10, fontWeight: "900", letterSpacing: 4 },
+  brandMain:                { color: THEME.text, fontSize: 40, fontWeight: "900", letterSpacing: -2, marginTop: -4 },
+  headerRight:              { flexDirection: "row", alignItems: "center", gap: 10 },
+  headerIconBtn:            { width: 42, height: 42, borderRadius: 14, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: THEME.border },
+  notifBadge:               { position: "absolute", top: 6, right: 6, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: THEME.red, justifyContent: "center", alignItems: "center", paddingHorizontal: 2 },
+  notifBadgeTxt:            { color: "#fff", fontSize: 8, fontWeight: "900" },
+  headerAvatarBtn:          {},
+  headerAvatarRing:         { padding: 2, borderRadius: 16 },
+  headerAvatarImg:          { width: 36, height: 36, borderRadius: 13, borderWidth: 2, borderColor: THEME.bg },
+  storySection:             { marginBottom: 8 },
+  storyRow:                 { flexDirection: "row", paddingHorizontal: 16, gap: 14, paddingVertical: 4 },
+  storyItem:                { alignItems: "center", width: 60 },
+  storyRing:                { width: 58, height: 58, borderRadius: 18, justifyContent: "center", alignItems: "center" },
+  storyInner:               { width: 52, height: 52, borderRadius: 16, backgroundColor: THEME.bg, justifyContent: "center", alignItems: "center" },
+  storyAvatar:              { width: 48, height: 48, borderRadius: 15 },
+  storyName:                { color: THEME.textMuted, fontSize: 10, marginTop: 5, fontWeight: "700", textAlign: "center" },
+  myStoryRing:              { width: 58, height: 58, borderRadius: 18, backgroundColor: THEME.ui2, justifyContent: "center", alignItems: "center", borderWidth: 2, borderColor: THEME.border, position: "relative" },
+  myStoryAdd:               { position: "absolute", bottom: -2, right: -2, width: 18, height: 18, borderRadius: 6, backgroundColor: THEME.accent, justifyContent: "center", alignItems: "center", borderWidth: 2, borderColor: THEME.bg },
+  filterScroll:             { marginBottom: 8 },
+  filterContent:            { paddingHorizontal: 16, gap: 8 },
+  filterTab:                { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.border },
+  filterTabActive:          { backgroundColor: THEME.accent, borderColor: THEME.accent },
+  filterTabTxt:             { color: THEME.textMuted, fontWeight: "700", fontSize: 12 },
+  filterTabTxtActive:       { color: "#000" },
+  listContent:              { paddingHorizontal: 14, paddingBottom: 120 },
+  card:                     { backgroundColor: THEME.ui, borderRadius: 24, padding: 18, marginBottom: 16, borderWidth: 1, borderColor: THEME.border },
+  pinnedStrip:              { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 8 },
+  pinnedTxt:                { color: THEME.accent, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  typeBadge:                { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 8, alignSelf: "flex-start", marginBottom: 12 },
+  typeBadgeTxt:             { fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  authorRow:                { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  authorLeft:               { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
+  avatarRing:               { width: 46, height: 46, borderRadius: 15, justifyContent: "center", alignItems: "center" },
+  avatarInner:              { width: 40, height: 40, borderRadius: 13, backgroundColor: THEME.bg, justifyContent: "center", alignItems: "center" },
+  avatar:                   { width: 36, height: 36, borderRadius: 11 },
+  authorInfo:               { flex: 1 },
+  authorNameRow:            { flexDirection: "row", alignItems: "center" },
+  authorName:               { color: THEME.text, fontWeight: "800", fontSize: 14 },
+  authorMeta:               { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 2 },
+  authorHandle:             { color: THEME.accent, fontSize: 11, fontWeight: "700" },
+  authorDot:                { color: THEME.textMuted, fontSize: 11 },
+  postTime:                 { color: THEME.textMuted, fontSize: 11 },
+  moreBtn:                  { padding: 4 },
+  postTitle:                { color: THEME.text, fontSize: 18, fontWeight: "900", marginBottom: 8, lineHeight: 24 },
+  postText:                 { color: "#B0A8C0", fontSize: 14, lineHeight: 22, marginBottom: 12 },
+  postImage:                { width: "100%", height: 210, borderRadius: 18, marginBottom: 12 },
+  bookPreviewRow:           { flexDirection: "row", gap: 14, marginBottom: 8 },
+  bookPreviewCover:         { width: 80, height: 115, borderRadius: 12, borderWidth: 2, borderColor: THEME.accent + "40" },
+  bookPreviewInfo:          { flex: 1 },
+  genrePill:                { backgroundColor: THEME.ui3, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, alignSelf: "flex-start", marginBottom: 6 },
+  genrePillTxt:             { color: THEME.purpleLight, fontSize: 9, fontWeight: "900" },
+  pricePill:                { backgroundColor: THEME.accentDim, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: "flex-start", marginTop: 6 },
+  pricePillTxt:             { color: THEME.accent, fontSize: 11, fontWeight: "900" },
+  researchCard:             { backgroundColor: "rgba(0,209,255,0.05)", borderRadius: 16, padding: 14, borderWidth: 1, borderColor: "rgba(0,209,255,0.15)" },
+  researchHeader:           { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
+  researchField:            { color: "#00D1FF", fontSize: 10, fontWeight: "900", letterSpacing: 1 },
+  researchFooter:           { flexDirection: "row", gap: 8, marginTop: 8 },
+  researchTag:              { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: THEME.ui2, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  researchTagTxt:           { color: THEME.textMuted, fontSize: 10 },
+  readTimePill:             { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "rgba(56,189,248,0.1)", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: "flex-start" },
+  readTimeTxt:              { color: THEME.blue, fontSize: 10, fontWeight: "700" },
+  weaveCard:                { backgroundColor: "rgba(245,158,11,0.06)", borderRadius: 16, padding: 14, borderWidth: 1 },
+  weaveHeader:              { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
+  weaveTypeTxt:             { fontSize: 10, fontWeight: "900", letterSpacing: 1 },
+  weaveBookRefRow:          { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 8 },
+  weaveBookRef:             { color: THEME.textMuted, fontSize: 12, flex: 1 },
+  weaveRatingRow:           { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8 },
+  weaveRating:              { fontSize: 18, fontWeight: "900" },
+  weaveRatingLabel:         { color: THEME.textMuted, fontSize: 11, fontWeight: "700" },
+  externalBadge:            { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 8 },
+  externalBadgeTxt:         { color: THEME.textMuted, fontSize: 10 },
+  adminCard:                { borderRadius: 24, padding: 20, marginBottom: 16, borderWidth: 1, borderColor: THEME.purple + "50" },
+  adminCardHeader:          { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
+  adminBadge:               { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accentDim, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
+  adminBadgeTxt:            { color: THEME.accent, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  adminTitle:               { color: THEME.text, fontSize: 18, fontWeight: "900", marginBottom: 8 },
+  adminContent:             { color: "#B0A8C0", fontSize: 14, lineHeight: 22 },
+  moodTag:                  { backgroundColor: THEME.ui2, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: "flex-start", marginBottom: 10 },
+  moodTagTxt:               { color: THEME.purpleLight, fontSize: 11, fontWeight: "700" },
+  reactionWrap:             { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 10, position: "relative" },
+  reactionPill:             { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: THEME.ui2, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10, borderWidth: 1, borderColor: THEME.border },
+  reactionPillActive:       { borderColor: THEME.accent, backgroundColor: THEME.accentDim },
+  reactionEmoji:            { fontSize: 13 },
+  reactionCount:            { color: THEME.textMuted, fontSize: 11, fontWeight: "700" },
+  reactionAddBtn:           { width: 30, height: 26, borderRadius: 10, backgroundColor: THEME.ui2, justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: THEME.border },
+  reactionAddTxt:           { color: THEME.textMuted, fontSize: 16, fontWeight: "900", marginTop: -2 },
+  reactionPicker:           { position: "absolute", bottom: 36, left: 0, flexDirection: "row", gap: 4, backgroundColor: THEME.ui3, borderRadius: 16, padding: 8, borderWidth: 1, borderColor: THEME.border, zIndex: 100 },
+  reactionPickerBtn:        { padding: 4 },
+  reactionPickerEmoji:      { fontSize: 22 },
+  actionBar:                { flexDirection: "row", alignItems: "center", gap: 4, paddingTop: 12, borderTopWidth: 1, borderTopColor: THEME.border },
+  actionBtn:                { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 6, borderRadius: 10 },
+  actionTxt:                { color: THEME.textMuted, fontSize: 13, fontWeight: "700" },
+  quickComment:             { flexDirection: "row", gap: 10, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: THEME.border, alignItems: "flex-end" },
+  quickCommentAvatar:       { width: 30, height: 30, borderRadius: 10 },
+  quickCommentAvatarFallback:{ backgroundColor: THEME.purple, justifyContent: "center", alignItems: "center" },
+  quickCommentInput:        { flex: 1, flexDirection: "row", alignItems: "flex-end", backgroundColor: THEME.ui2, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 8, gap: 8, borderWidth: 1, borderColor: THEME.border },
+  quickCommentTxt:          { flex: 1, color: THEME.text, fontSize: 13, maxHeight: 80 },
+  adCard:                   { backgroundColor: THEME.ui, borderRadius: 20, overflow: "hidden", marginBottom: 16, borderWidth: 1, borderColor: THEME.border },
+  adLabel:                  { flexDirection: "row", alignItems: "center", gap: 4, padding: 10, paddingBottom: 0 },
+  adLabelTxt:               { color: THEME.textMuted, fontSize: 10, fontWeight: "600" },
+  adImage:                  { width: "100%", height: 160 },
+  adBody:                   { padding: 14 },
+  adTitle:                  { color: THEME.text, fontWeight: "800", fontSize: 15, marginBottom: 4 },
+  adContent:                { color: THEME.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 12 },
+  adCTA:                    { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accent, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, alignSelf: "flex-start" },
+  adCTATxt:                 { color: "#000", fontWeight: "900", fontSize: 12 },
+  loadMoreIndicator:        { paddingVertical: 20, alignItems: "center" },
+  emptyState:               { paddingVertical: 80, alignItems: "center" },
+  emptyTitle:               { color: THEME.text, fontSize: 18, fontWeight: "800", marginTop: 16 },
+  emptySub:                 { color: THEME.textMuted, fontSize: 13, marginTop: 8, textAlign: "center", lineHeight: 20 },
+  notifModal:               { flex: 1, backgroundColor: THEME.bg },
+  notifHeader:              { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, paddingTop: 60, borderBottomWidth: 1, borderBottomColor: THEME.border },
+  notifTitle:               { color: THEME.text, fontSize: 22, fontWeight: "900" },
+  notifCloseBtn:            { width: 36, height: 36, borderRadius: 12, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center" },
+  notifLoader:              { flex: 1, justifyContent: "center", alignItems: "center" },
+  notifEmpty:               { flex: 1, justifyContent: "center", alignItems: "center", gap: 12 },
+  notifEmptyTxt:            { color: THEME.textMuted, fontSize: 16, fontWeight: "600" },
+  notifItem:                { flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderBottomWidth: 1, borderBottomColor: THEME.border },
+  notifItemUnread:          { backgroundColor: THEME.accentDim },
+  notifIconCircle:          { width: 40, height: 40, borderRadius: 13, justifyContent: "center", alignItems: "center" },
+  notifContent:             { flex: 1 },
+  notifItemTxt:             { color: THEME.text, fontSize: 13, lineHeight: 18 },
+  notifItemTime:            { color: THEME.textMuted, fontSize: 11, marginTop: 3 },
+  unreadDot:                { width: 8, height: 8, borderRadius: 4, backgroundColor: THEME.accent },
 });
