@@ -61,7 +61,7 @@ export default function AdminDashboard() {
     );
 
     const unsubPending = onSnapshot(
-      query(collection(db, "books"), where("status", "==", "pending")),
+      query(collection(db, "books"), where("status", "==", "submitted")),
       (snap) => setStats((s) => ({ ...s, pendingBooks: snap.size }))
     );
 
