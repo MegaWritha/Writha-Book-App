@@ -53,11 +53,11 @@ const CATEGORIES = [
 ];
 
 const FORMATTING_TOOLS = [
-  { icon: "format-bold",           label: "Bold",    wrap: "**"  },
-  { icon: "format-italic",         label: "Italic",  wrap: "_"   },
-  { icon: "format-quote-open",     label: "Quote",   wrap: "> "  },
-  { icon: "format-list-bulleted",  label: "List",    wrap: "• "  },
-  { icon: "format-header-1",       label: "Heading", wrap: "## " },
+  { icon: "format-bold",          label: "Bold",    wrap: "**"  },
+  { icon: "format-italic",        label: "Italic",  wrap: "_"   },
+  { icon: "format-quote-open",    label: "Quote",   wrap: "> "  },
+  { icon: "format-list-bulleted", label: "List",    wrap: "• "  },
+  { icon: "format-header-1",      label: "Heading", wrap: "## " },
 ];
 
 // ── CROSS PLATFORM HELPERS ────────────────────────────────────────────────
@@ -84,9 +84,14 @@ const webConfirm = (
   }
 };
 
+// ── PLACEHOLDER ───────────────────────────────────────────────────────────
+const LinearGradientPlaceholder = () => (
+  <View style={StyleSheet.absoluteFill} />
+);
+
 export default function CreateArticleScreen() {
-  const router = useRouter();
-  const user   = auth.currentUser;
+  const router       = useRouter();
+  const user         = auth.currentUser;
   const bodyInputRef = useRef<TextInput>(null);
 
   // Content
@@ -100,9 +105,9 @@ export default function CreateArticleScreen() {
   const [coverImageUri, setCoverImageUri] = useState<string | null>(null);
 
   // Settings
-  const [publishToWeb,   setPublishToWeb]   = useState(false);
-  const [allowComments,  setAllowComments]  = useState(true);
-  const [isFeatured,     setIsFeatured]     = useState(false);
+  const [publishToWeb,  setPublishToWeb]  = useState(false);
+  const [allowComments, setAllowComments] = useState(true);
+  const [isFeatured,    setIsFeatured]    = useState(false);
 
   // UI state
   const [publishing,     setPublishing]     = useState(false);
@@ -114,16 +119,15 @@ export default function CreateArticleScreen() {
   const calcReadTime = (text: string) =>
     Math.max(1, Math.ceil(text.trim().split(/\s+/).length / 200));
 
-  const wordCount        = body.trim() ? body.trim().split(/\s+/).length : 0;
+  const wordCount         = body.trim() ? body.trim().split(/\s+/).length : 0;
   const estimatedReadTime = calcReadTime(body);
 
   // ── IMAGE PICKER ──────────────────────────────────────────────────────
   const pickCoverImage = async () => {
     if (Platform.OS === "web") {
-      // Web: use file input
-      const input = document.createElement("input");
-      input.type  = "file";
-      input.accept = "image/*";
+      const input    = document.createElement("input");
+      input.type     = "file";
+      input.accept   = "image/*";
       input.onchange = (e: any) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -134,7 +138,6 @@ export default function CreateArticleScreen() {
       input.click();
       return;
     }
-
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!granted) {
       webAlert("Please allow access to your photo library.");
@@ -156,9 +159,9 @@ export default function CreateArticleScreen() {
     if (!coverImageUri) return null;
     try {
       setUploadProgress("Uploading cover image...");
-      const storage  = getStorage();
-      const response = await fetch(coverImageUri);
-      const blob     = await response.blob();
+      const storage    = getStorage();
+      const response   = await fetch(coverImageUri);
+      const blob       = await response.blob();
       const storageRef = ref(storage, `articles/${user!.uid}/${Date.now()}.jpg`);
       await uploadBytes(storageRef, blob);
       const url = await getDownloadURL(storageRef);
@@ -241,7 +244,7 @@ export default function CreateArticleScreen() {
       });
 
       if (Platform.OS === "web") {
-        window.alert("Draft saved! You can find it in your drafts.");
+        window.alert("Draft saved! You can find it in your profile drafts.");
       } else {
         Alert.alert("Draft Saved ✅", "Your article draft has been saved.", [
           { text: "Keep Writing" },
@@ -255,86 +258,94 @@ export default function CreateArticleScreen() {
     }
   };
 
-  // ── PUBLISH ───────────────────────────────────────────────────────────
-  const publishArticle = async () => {
+  // ── PUBLISH (submit for admin review) ────────────────────────────────
+  const publishArticle = () => {
     if (!validate()) return;
 
-    const doPublish = async () => {
-      setPublishing(true);
-      try {
-        let coverUrl = coverImage;
-        if (coverImageUri && !coverImageUri.startsWith("http")) {
-          coverUrl = await uploadCoverImage();
-        }
-
-        const articleData: Record<string, any> = {
-          type:         "article",
-          status:       "published",
-          title:        title.trim(),
-          subtitle:     subtitle.trim(),
-          content:      body.trim(),
-          category,
-          tags,
-          coverUrl:     coverUrl || null,
-          publishToWeb,
-          allowComments,
-          isFeatured,
-          userId:       user!.uid,
-          userName:     user?.displayName || "Scholar",
-          userPhoto:    user?.photoURL    || "",
-          userHandle:   user?.email?.split("@")[0] || "scholar",
-          likesCount:   0,
-          commentsCount: 0,
-          likedBy:      [],
-          reactions:    {},
-          readTime:     calcReadTime(body),
-          wordCount:    wordCount,
-          createdAt:    serverTimestamp(),
-          updatedAt:    serverTimestamp(),
-        };
-
-        // Save to feed
-        const docRef = await addDoc(collection(db, "feed"), articleData);
-
-        // Mirror to articles collection if publishing to web
-        if (publishToWeb) {
-          await addDoc(collection(db, "articles"), {
-            ...articleData,
-            feedId: docRef.id,
-          });
-        }
-
-        // Increment user article count
-        try {
-          await updateDoc(doc(db, "users", user!.uid), {
-            articleCount: increment(1),
-          });
-        } catch (_) {}
-
-        const successMsg = publishToWeb
-          ? "Your article is live on the Writha app and website!"
-          : "Your article is live on Writha!";
-
-        if (Platform.OS === "web") {
-          window.alert("Published! 🎉\n\n" + successMsg);
-          router.back();
-        } else {
-          Alert.alert("Published! 🎉", successMsg, [
-            { text: "Done", onPress: () => router.back() },
-          ]);
-        }
-      } catch (e: any) {
-        webAlert("Publish failed: " + e.message);
-      } finally {
-        setPublishing(false);
-      }
-    };
-
     const confirmMsg = publishToWeb
-      ? "This article will be published to the Writha app AND the public Writha website."
-      : "This article will be published to the Writha app only.";
+      ? "Your article will be reviewed by admins before going live on the app and Writha website."
+      : "Your article will be reviewed by admins before going live on the Writha app.";
 
-    webConfirm("Publish Article", confirmMsg, doPublish);
+    webConfirm("Submit for Review", confirmMsg, doPublish);
+  };
+
+  const doPublish = async () => {
+    setPublishing(true);
+    try {
+      let coverUrl = coverImage;
+      if (coverImageUri && !coverImageUri.startsWith("http")) {
+        coverUrl = await uploadCoverImage();
+      }
+
+      const articleData: Record<string, any> = {
+        type:          "article",
+        status:        "pending",
+        title:         title.trim(),
+        subtitle:      subtitle.trim(),
+        content:       body.trim(),
+        category,
+        tags,
+        coverUrl:      coverUrl || null,
+        publishToWeb,
+        allowComments,
+        isFeatured,
+        userId:        user!.uid,
+        userName:      user?.displayName || "Scholar",
+        userPhoto:     user?.photoURL    || "",
+        userHandle:    user?.email?.split("@")[0] || "scholar",
+        likesCount:    0,
+        commentsCount: 0,
+        likedBy:       [],
+        reactions:     {},
+        readTime:      calcReadTime(body),
+        wordCount,
+        createdAt:     serverTimestamp(),
+        updatedAt:     serverTimestamp(),
+      };
+
+      // Save to articles collection — NOT feed
+      const articleRef = await addDoc(collection(db, "articles"), articleData);
+
+      // Add to admin review queue
+      await addDoc(collection(db, "adminQueue"), {
+        type:        "article",
+        articleId:   articleRef.id,
+        title:       title.trim(),
+        subtitle:    subtitle.trim(),
+        coverUrl:    coverUrl || null,
+        category,
+        content:     body.trim(),
+        userId:      user!.uid,
+        userName:    user?.displayName || "Scholar",
+        userPhoto:   user?.photoURL    || "",
+        status:      "pending",
+        submittedAt: serverTimestamp(),
+      });
+
+      // Update user article count
+      try {
+        await updateDoc(doc(db, "users", user!.uid), {
+          articleCount: increment(1),
+        });
+      } catch (_) {}
+
+      if (Platform.OS === "web") {
+        window.alert(
+          "Submitted for Review! 📝\n\nYour article is in the admin queue. You'll be notified when it goes live."
+        );
+        router.back();
+      } else {
+        Alert.alert(
+          "Submitted for Review! 📝",
+          "Your article is in the admin queue. You'll be notified when it goes live.",
+          [{ text: "Done", onPress: () => router.back() }]
+        );
+      }
+    } catch (e: any) {
+      webAlert("Publish failed: " + e.message);
+    } finally {
+      setPublishing(false);
+    }
   };
 
   // ── BACK GUARD ────────────────────────────────────────────────────────
@@ -342,9 +353,8 @@ export default function CreateArticleScreen() {
     if (!title && !body) { router.back(); return; }
     webConfirm(
       "Discard Article?",
-      "You have unsaved content. Save as draft or discard?",
-      () => router.back(),
-      undefined
+      "You have unsaved content. Are you sure?",
+      () => router.back()
     );
   };
 
@@ -386,7 +396,7 @@ export default function CreateArticleScreen() {
           >
             {publishing
               ? <ActivityIndicator size="small" color="#000" />
-              : <Text style={styles.publishBtnTxt}>Publish</Text>
+              : <Text style={styles.publishBtnTxt}>Submit</Text>
             }
           </TouchableOpacity>
         </View>
@@ -426,7 +436,6 @@ export default function CreateArticleScreen() {
             ]}>
               {tab.label}
             </Text>
-            {/* Red dot if category missing and on settings */}
             {tab.key === "settings" && !category && (
               <View style={styles.tabAlert} />
             )}
@@ -439,7 +448,6 @@ export default function CreateArticleScreen() {
         contentContainerStyle={{ paddingBottom: 140 }}
         keyboardShouldPersistTaps="handled"
       >
-
         {/* ── WRITE TAB ── */}
         {activeSection === "write" && (
           <View style={styles.writeSection}>
@@ -554,7 +562,6 @@ export default function CreateArticleScreen() {
               </View>
             </View>
 
-            {/* QUICK SETTINGS HINT */}
             {!category && (
               <TouchableOpacity
                 style={styles.categoryHint}
@@ -574,7 +581,6 @@ export default function CreateArticleScreen() {
         {activeSection === "settings" && (
           <View style={styles.settingsSection}>
 
-            {/* CATEGORY */}
             <Text style={styles.settingsLabel}>CATEGORY *</Text>
             <View style={styles.categoryGrid}>
               {CATEGORIES.map((cat) => (
@@ -596,7 +602,6 @@ export default function CreateArticleScreen() {
               ))}
             </View>
 
-            {/* TAGS */}
             <Text style={styles.settingsLabel}>TAGS ({tags.length}/8)</Text>
             <View style={styles.tagInputRow}>
               <TextInput
@@ -627,7 +632,6 @@ export default function CreateArticleScreen() {
               </View>
             )}
 
-            {/* PUBLISH OPTIONS */}
             <Text style={styles.settingsLabel}>PUBLISH OPTIONS</Text>
 
             <View style={styles.settingRow}>
@@ -676,12 +680,23 @@ export default function CreateArticleScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.webInfoTitle}>Web Publishing Active</Text>
                   <Text style={styles.webInfoTxt}>
-                    Your article will appear on writha.com/articles and may be indexed
-                    by search engines. Ensure your content follows Writha's community guidelines.
+                    Your article will appear on writha.com/articles after admin approval.
                   </Text>
                 </View>
               </View>
             )}
+
+            {/* Admin review notice */}
+            <View style={styles.reviewNotice}>
+              <Ionicons name="shield-checkmark-outline" size={18} color={THEME.accent} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.reviewNoticeTitle}>Admin Review Required</Text>
+                <Text style={styles.reviewNoticeTxt}>
+                  All articles are reviewed before going live. This usually takes 24–48 hours.
+                  You'll be notified when your article is approved or if changes are needed.
+                </Text>
+              </View>
+            </View>
 
             <View style={styles.guidelinesBox}>
               <Text style={styles.guidelinesTitle}>📋 Article Guidelines</Text>
@@ -703,26 +718,28 @@ export default function CreateArticleScreen() {
             <View style={styles.previewBanner}>
               <Ionicons name="eye-outline" size={16} color={THEME.blue} />
               <Text style={styles.previewBannerTxt}>
-                Reader preview — this is how your article will appear
+                Reader preview — this is how your article will appear after approval
               </Text>
             </View>
 
-            {/* Readiness checklist */}
             <View style={styles.readinessCard}>
-              <Text style={styles.readinessTitle}>PUBLISH CHECKLIST</Text>
+              <Text style={styles.readinessTitle}>SUBMISSION CHECKLIST</Text>
               {[
-                { label: "Title (10+ chars)",     ok: title.trim().length >= 10     },
-                { label: "Body (50+ words)",       ok: wordCount >= 50               },
-                { label: "Category selected",      ok: !!category                    },
-                { label: "Cover image",            ok: !!coverImage,  optional: true },
-                { label: "Subtitle",               ok: !!subtitle,    optional: true },
-                { label: "Tags added",             ok: tags.length > 0, optional: true },
+                { label: "Title (10+ chars)",  ok: title.trim().length >= 10    },
+                { label: "Body (50+ words)",    ok: wordCount >= 50              },
+                { label: "Category selected",   ok: !!category                  },
+                { label: "Cover image",         ok: !!coverImage, optional: true },
+                { label: "Subtitle",            ok: !!subtitle,   optional: true },
+                { label: "Tags added",          ok: tags.length > 0, optional: true },
               ].map((item) => (
                 <View key={item.label} style={styles.checklistRow}>
                   <Ionicons
                     name={item.ok ? "checkmark-circle" : "ellipse-outline"}
                     size={16}
-                    color={item.ok ? THEME.green : item.optional ? THEME.textMuted : THEME.red}
+                    color={
+                      item.ok ? THEME.green :
+                      item.optional ? THEME.textMuted : THEME.red
+                    }
                   />
                   <Text style={[
                     styles.checklistLabel,
@@ -736,7 +753,6 @@ export default function CreateArticleScreen() {
               ))}
             </View>
 
-            {/* Cover */}
             {coverImage ? (
               <Image
                 source={{ uri: coverImage }}
@@ -813,7 +829,7 @@ export default function CreateArticleScreen() {
         )}
       </ScrollView>
 
-      {/* BOTTOM PUBLISH BAR */}
+      {/* BOTTOM BAR */}
       <View style={styles.bottomBar}>
         <View style={styles.bottomBarLeft}>
           <Ionicons
@@ -825,9 +841,7 @@ export default function CreateArticleScreen() {
             {publishToWeb ? "App + Web" : "App Only"}
           </Text>
           {wordCount > 0 && (
-            <Text style={styles.bottomWordCount}>
-              · {wordCount} words
-            </Text>
+            <Text style={styles.bottomWordCount}>· {wordCount} words</Text>
           )}
         </View>
         <TouchableOpacity
@@ -840,7 +854,7 @@ export default function CreateArticleScreen() {
           ) : (
             <>
               <Ionicons name="rocket-outline" size={18} color="#000" />
-              <Text style={styles.bottomPublishBtnTxt}>PUBLISH</Text>
+              <Text style={styles.bottomPublishBtnTxt}>SUBMIT FOR REVIEW</Text>
             </>
           )}
         </TouchableOpacity>
@@ -849,15 +863,8 @@ export default function CreateArticleScreen() {
   );
 }
 
-// Inline placeholder gradient substitute (no LinearGradient dependency needed)
-const LinearGradientPlaceholder = () => (
-  <View style={StyleSheet.absoluteFill} />
-);
-
 const styles = StyleSheet.create({
   container:             { flex: 1, backgroundColor: THEME.bg },
-
-  // Header
   header:                { paddingTop: Platform.OS === "ios" ? 56 : 40, paddingHorizontal: 16, paddingBottom: 12, flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui, borderBottomWidth: 1, borderBottomColor: THEME.ui2 },
   backBtn:               { padding: 4 },
   headerCenter:          { flex: 1, marginHorizontal: 12 },
@@ -868,20 +875,14 @@ const styles = StyleSheet.create({
   draftBtnTxt:           { color: THEME.purpleLight, fontWeight: "700", fontSize: 13 },
   publishBtn:            { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, backgroundColor: THEME.accent },
   publishBtnTxt:         { color: "#000", fontWeight: "900", fontSize: 13 },
-
-  // Upload banner
   uploadBanner:          { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: THEME.ui2, paddingHorizontal: 16, paddingVertical: 10 },
   uploadBannerTxt:       { color: THEME.text, fontSize: 13 },
-
-  // Section tabs
   sectionTabs:           { flexDirection: "row", backgroundColor: THEME.ui, borderBottomWidth: 1, borderBottomColor: THEME.ui2 },
   sectionTab:            { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 12, gap: 6, position: "relative" },
   sectionTabActive:      { backgroundColor: THEME.accent },
   sectionTabTxt:         { color: THEME.textMuted, fontWeight: "700", fontSize: 12 },
   sectionTabTxtActive:   { color: "#000" },
   tabAlert:              { position: "absolute", top: 8, right: 18, width: 7, height: 7, borderRadius: 4, backgroundColor: THEME.red },
-
-  // Write section
   writeSection:          { padding: 16 },
   coverPicker:           { borderRadius: 16, overflow: "hidden", marginBottom: 20, borderWidth: 1.5, borderColor: THEME.ui2, borderStyle: "dashed" },
   coverPlaceholder:      { height: 180, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center", gap: 8 },
@@ -908,8 +909,6 @@ const styles = StyleSheet.create({
   wordCountDivider:      { width: 1, backgroundColor: THEME.ui2 },
   categoryHint:          { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: THEME.orange + "15", borderRadius: 12, padding: 12, marginTop: 16, borderWidth: 1, borderColor: THEME.orange + "30" },
   categoryHintTxt:       { color: THEME.orange, fontSize: 12, fontWeight: "700", flex: 1 },
-
-  // Settings section
   settingsSection:       { padding: 16 },
   settingsLabel:         { color: THEME.accent, fontSize: 10, fontWeight: "900", letterSpacing: 2, marginBottom: 12, marginTop: 24 },
   categoryGrid:          { flexDirection: "row", flexWrap: "wrap", gap: 8 },
@@ -931,11 +930,12 @@ const styles = StyleSheet.create({
   webInfoBox:            { flexDirection: "row", gap: 10, backgroundColor: THEME.blue + "15", borderRadius: 14, padding: 14, marginTop: 4, borderWidth: 1, borderColor: THEME.blue + "30", alignItems: "flex-start" },
   webInfoTitle:          { color: THEME.blue, fontWeight: "800", fontSize: 13, marginBottom: 4 },
   webInfoTxt:            { color: THEME.textMuted, fontSize: 12, lineHeight: 18 },
-  guidelinesBox:         { backgroundColor: THEME.ui, borderRadius: 16, padding: 18, marginTop: 20, borderWidth: 1, borderColor: THEME.ui2 },
+  reviewNotice:          { flexDirection: "row", gap: 12, backgroundColor: THEME.accentDim, borderRadius: 16, padding: 16, marginTop: 16, borderWidth: 1, borderColor: THEME.accent + "30", alignItems: "flex-start" },
+  reviewNoticeTitle:     { color: THEME.accent, fontWeight: "800", fontSize: 13, marginBottom: 6 },
+  reviewNoticeTxt:       { color: THEME.textMuted, fontSize: 12, lineHeight: 19 },
+  guidelinesBox:         { backgroundColor: THEME.ui, borderRadius: 16, padding: 18, marginTop: 16, borderWidth: 1, borderColor: THEME.ui2 },
   guidelinesTitle:       { color: THEME.text, fontWeight: "900", fontSize: 14, marginBottom: 12 },
   guidelinesTxt:         { color: THEME.textMuted, fontSize: 12, lineHeight: 22 },
-
-  // Preview section
   previewSection:        { padding: 16 },
   previewBanner:         { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: THEME.blue + "15", borderRadius: 12, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: THEME.blue + "30" },
   previewBannerTxt:      { color: THEME.blue, fontSize: 12, fontWeight: "600", flex: 1 },
@@ -962,8 +962,6 @@ const styles = StyleSheet.create({
   previewTagsRow:        { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 24 },
   previewTag:            { backgroundColor: THEME.ui, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, borderWidth: 1, borderColor: THEME.ui2 },
   previewTagTxt:         { color: THEME.textMuted, fontSize: 12 },
-
-  // Bottom bar
   bottomBar:             { position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: THEME.ui, borderTopWidth: 1, borderTopColor: THEME.ui2, paddingHorizontal: 16, paddingVertical: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   bottomBarLeft:         { flexDirection: "row", alignItems: "center", gap: 6 },
   bottomBarTxt:          { color: THEME.textMuted, fontSize: 12, fontWeight: "700" },

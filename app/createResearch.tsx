@@ -296,103 +296,112 @@ export default function CreateResearch() {
 
   // ── SUBMIT ────────────────────────────────────────────────────────
   const handleSubmit = async (status: "draft" | "pending") => {
+  if (status === "pending") {
+    const err = validate();
+    if (err) { webAlert("Validation Error", err); return; }
+  } else {
+    if (!resTitle.trim()) { webAlert("Title Required", "Add a title to save your draft."); return; }
+  }
+
+  setLoading(true);
+  try {
+    const coverUrl = await uploadCoverImage();
+    const parsedPrice = resIsPaid ? parseFloat(resPrice) || 0 : 0;
+
+    const payload: Record<string, any> = {
+      userId:        user.uid,
+      userName:      user.displayName || "Scholar",
+      userPhoto:     user.photoURL    || "",
+      userHandle:    user.email?.split("@")[0] || "scholar",
+      title:         resTitle.trim(),
+      abstract:      resAbstract.trim(),
+      content:       resAbstract.trim(),
+      category:      resCategory,
+      fieldOfStudy:  resField,
+      institution:   resInstitution.trim(),
+      tags:          resTags,
+      coverUrl:      coverUrl || null,
+      isPaid:        resIsPaid,
+      price:         parsedPrice,
+      publishToWeb:  resPublishToWeb,
+      allowComments: resAllowComments,
+      type:          "research",
+      fileType:      resMethod.toLowerCase(),
+      // ── KEY CHANGE: never write to feed here ──
+      // status pending = waiting for admin approval
+      // status draft   = saved privately, not submitted
+      status,
+      likesCount:    0,
+      commentsCount: 0,
+      downloadsCount:0,
+      viewsCount:    0,
+      likedBy:       [],
+      reactions:     {},
+      createdAt:     serverTimestamp(),
+      updatedAt:     serverTimestamp(),
+    };
+
+    const fullPayload = {
+      ...payload,
+      manualContent:   resMethod === "MANUAL" ? resManualContent : null,
+      scriptContent:   resMethod === "SCRIPT" ? resScriptContent : null,
+      pdfUrl:          resMethod === "PDF"    ? resPdfUrl        : null,
+      pdfSize:         resMethod === "PDF"    ? resPdfSize       : null,
+      wordCount:       resMethod === "MANUAL" ? resWordCount      : null,
+      adminReviewedAt: null,
+      adminFeedback:   null,
+      approvedBy:      null,
+    };
+
+    // Save to research collection only — NOT feed
+    await addDoc(collection(db, "research"), fullPayload);
+
+    // Notify admins by writing to adminQueue collection
     if (status === "pending") {
-      const err = validate();
-      if (err) { webAlert("Validation Error", err); return; }
-    } else {
-      if (!resTitle.trim()) { webAlert("Title Required", "Add a title to save your draft."); return; }
+      await addDoc(collection(db, "adminQueue"), {
+        type:        "research",
+        title:       resTitle.trim(),
+        userId:      user.uid,
+        userName:    user.displayName || "Scholar",
+        userPhoto:   user.photoURL   || "",
+        abstract:    resAbstract.trim(),
+        coverUrl:    coverUrl || null,
+        status:      "pending",
+        submittedAt: serverTimestamp(),
+      });
     }
 
-    setLoading(true);
+    // Update user research count
     try {
-      const coverUrl = await uploadCoverImage();
-      const parsedPrice = resIsPaid ? parseFloat(resPrice) || 0 : 0;
+      await updateDoc(doc(db, "users", user.uid), {
+        researchCount: increment(1),
+      });
+    } catch (_) {}
 
-      const payload: Record<string, any> = {
-        userId:        user.uid,
-        userName:      user.displayName || "Scholar",
-        userPhoto:     user.photoURL    || "",
-        userHandle:    user.email?.split("@")[0] || "scholar",
-        title:         resTitle.trim(),
-        abstract:      resAbstract.trim(),
-        content:       resAbstract.trim(), // feed preview uses content field
-        category:      resCategory,
-        fieldOfStudy:  resField,
-        institution:   resInstitution.trim(),
-        tags:          resTags,
-        coverUrl:      coverUrl || null,
-        isPaid:        resIsPaid,
-        price:         parsedPrice,
-        publishToWeb:  resPublishToWeb,
-        allowComments: resAllowComments,
-        type:          "research",
-        fileType:      resMethod.toLowerCase(),
-        status,
-        likesCount:    0,
-        commentsCount: 0,
-        downloadsCount:0,
-        viewsCount:    0,
-        likedBy:       [],
-        reactions:     {},
-        createdAt:     serverTimestamp(),
-        updatedAt:     serverTimestamp(),
-      };
-
-      // Method-specific content
-      const fullPayload = {
-        ...payload,
-        manualContent:    resMethod === "MANUAL" ? resManualContent : null,
-        scriptContent:    resMethod === "SCRIPT" ? resScriptContent : null,
-        pdfUrl:           resMethod === "PDF"    ? resPdfUrl        : null,
-        pdfSize:          resMethod === "PDF"    ? resPdfSize       : null,
-        wordCount:        resMethod === "MANUAL" ? resWordCount      : null,
-        adminReviewedAt:  null,
-        adminFeedback:    null,
-        approvedBy:       null,
-      };
-
-      // Save to research collection
-      const resRef = await addDoc(collection(db, "research"), fullPayload);
-
-      // Only add to feed if submitting for review (pending) — not drafts
-      if (status === "pending") {
-        await addDoc(collection(db, "feed"), {
-          ...payload,
-          originalId: resRef.id,
-        });
-      }
-
-      // Update user research count — wrapped in try/catch so it doesn't block
-      try {
-        await updateDoc(doc(db, "users", user.uid), {
-          researchCount: increment(1),
-        });
-      } catch (_) {}
-
-      const isDraft = status === "draft";
-      if (Platform.OS === "web") {
-        window.alert(
-          isDraft
-            ? "Draft Saved!\n\nYou can continue editing later."
-            : "Submitted for Review! 🎓\n\nYou'll be notified when your research is approved (24–48 hours)."
-        );
-        router.back();
-      } else {
-        Alert.alert(
-          isDraft ? "Draft Saved 📁" : "Submitted! 🎓",
-          isDraft
-            ? "Your draft has been saved. You can continue editing later."
-            : "Your research has been submitted for admin review. You'll be notified when approved (24–48 hours).",
-          [{ text: "Done", onPress: () => router.back() }]
-        );
-      }
-    } catch (e: any) {
-      webAlert("Error", e.message || "Something went wrong. Please try again.");
-    } finally {
-      setLoading(false);
-      setUploadMsg(null);
+    const isDraft = status === "draft";
+    if (Platform.OS === "web") {
+      window.alert(
+        isDraft
+          ? "Draft Saved!\n\nYou can continue editing later from your profile."
+          : "Submitted for Review! 🎓\n\nYour research is now in the admin queue. You'll be notified when approved (24–48 hours)."
+      );
+      router.back();
+    } else {
+      Alert.alert(
+        isDraft ? "Draft Saved 📁" : "Submitted! 🎓",
+        isDraft
+          ? "Your draft has been saved. You can continue editing later."
+          : "Your research is now in the admin queue. You'll be notified when approved within 24–48 hours.",
+        [{ text: "Done", onPress: () => router.back() }]
+      );
     }
-  };
+  } catch (e: any) {
+    webAlert("Error", e.message || "Something went wrong. Please try again.");
+  } finally {
+    setLoading(false);
+    setUploadMsg(null);
+  }
+};
 
   // ── BACK GUARD ────────────────────────────────────────────────────
   const handleBack = () => {

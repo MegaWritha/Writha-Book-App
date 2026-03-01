@@ -398,7 +398,7 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
     item.type === "research" ? `${baseUrl}/research/${item.id}` :
     item.type === "book"     ? `${baseUrl}/book/${item.bookId || item.id}` :
     item.type === "weave"    ? `${baseUrl}/weave/${item.originalId || item.id}` :
-                               `${baseUrl}/discussion/${item.id}/comments`;
+                               `${baseUrl}/discussion/${item.id}`;
 
   if (Platform.OS === "web") {
     if (navigator.share) {
@@ -443,9 +443,9 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
     } else if (item.type === "research") {
       router.push(`/research/${item.originalId || item.id}` as any);
     } else if (item.type === "weave") {
-      router.push(`/weave/${item.originalI || item.id}/comments` as any);
+      router.push(`/weave/${item.originalId || item.id}` as any);
     } else {
-      router.push('/discussion/${item.id}/comments' as any);
+      router.push(`/discussion/${item.id}` as any);
     }
   };
 
