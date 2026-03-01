@@ -390,23 +390,62 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
   };
 
   const onShare = async () => {
-    try {
-      await Share.share({
-        message: `${item.title || item.content?.slice(0, 80) || "Check this out"} — Writha`,
-      });
-    } catch (e) { console.error(e); }
-  };
+  const title   = item.title || item.content?.slice(0, 80) || "Check this out";
+  const baseUrl = "https://writha-book-app.vercel.app";
+
+  const url =
+    item.type === "article"  ? `${baseUrl}/article/${item.id}`  :
+    item.type === "research" ? `${baseUrl}/research/${item.id}` :
+    item.type === "book"     ? `${baseUrl}/book/${item.bookId || item.id}` :
+    item.type === "weave"    ? `${baseUrl}/weave/${item.originalId || item.id}` :
+                               `${baseUrl}/discussion/${item.id}/comments`;
+
+  if (Platform.OS === "web") {
+    if (navigator.share) {
+      // Native web share sheet — opens the OS share menu on mobile browsers
+      try {
+        await navigator.share({
+          title:  `${title} — Writha`,
+          text:   title,
+          url,
+        });
+      } catch (e) {
+        // User cancelled or browser blocked — fall back to clipboard
+        await navigator.clipboard.writeText(url);
+        window.alert("Link copied to clipboard!");
+      }
+    } else {
+      // Desktop browser — copy link to clipboard
+      await navigator.clipboard.writeText(url);
+      window.alert("Link copied to clipboard!\n\n" + url);
+    }
+    return;
+  }
+
+  // Native mobile — opens full OS share sheet (WhatsApp, Messages, etc.)
+  try {
+    await Share.share({
+      title:   `${title} — Writha`,
+      message: Platform.OS === "android" ? `${title} — Writha\n${url}` : title,
+      url,
+    });
+  } catch (e) {
+    console.error(e);
+  }
+};
 
   // ── Navigate to correct detail screen ───────────────────────────
   const navigateToPost = () => {
     if (item.type === "book" || item.type === "book_update") {
       router.push(`/book/${item.bookId || item.originalId || item.id}` as any);
+    } else if (item.type === "article") {
+      router.push(`/article/${item.id}` as any);
     } else if (item.type === "research") {
       router.push(`/research/${item.originalId || item.id}` as any);
     } else if (item.type === "weave") {
-      router.push(`/weave/${item.originalId || item.id}` as any);
+      router.push(`/weave/${item.originalI || item.id}/comments` as any);
     } else {
-      router.push(`/discussion/${item.id}/comments` as any);
+      router.push('/discussion/${item.id}/comments' as any);
     }
   };
 
