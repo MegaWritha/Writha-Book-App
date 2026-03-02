@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback, memo } from "react";
 import {
   View, Text, StyleSheet, FlatList, ActivityIndicator, TouchableOpacity,
   Image, StatusBar, RefreshControl, Alert, Share, Animated,
-  Dimensions, TextInput, Modal, ScrollView, Platform,
+  Dimensions, TextInput, Modal, ScrollView, Platform, TouchableWithoutFeedback,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -131,27 +131,36 @@ const StoryRing = memo(({ user, onPress }: { user: any; onPress: () => void }) =
 ));
 
 // ── AD CARD ───────────────────────────────────────────────────────────────
-const AdCard = memo(({ item }: { item: any }) => (
-  <View style={styles.adCard}>
-    <View style={styles.adLabel}>
-      <Ionicons name="megaphone-outline" size={10} color={THEME.textMuted} />
-      <Text style={styles.adLabelTxt}>Sponsored</Text>
+// FIX 7: Added onPress to CTA button
+const AdCard = memo(({ item }: { item: any }) => {
+  const router = useRouter();
+  
+  return (
+    <View style={styles.adCard}>
+      <View style={styles.adLabel}>
+        <Ionicons name="megaphone-outline" size={10} color={THEME.textMuted} />
+        <Text style={styles.adLabelTxt}>Sponsored</Text>
+      </View>
+      {(item.coverUrl || item.image) ? (
+        <Image source={{ uri: item.coverUrl || item.image }} style={styles.adImage} resizeMode="cover" />
+      ) : null}
+      <View style={styles.adBody}>
+        <Text style={styles.adTitle}>{item.title}</Text>
+        {item.content ? <Text style={styles.adContent} numberOfLines={2}>{item.content}</Text> : null}
+        <TouchableOpacity 
+          style={styles.adCTA} 
+          onPress={() => router.push("/advertise" as any)}
+        >
+          <Text style={styles.adCTATxt}>{item.ctaLabel || "Get Started"}</Text>
+          <Ionicons name="arrow-forward" size={12} color="#000" />
+        </TouchableOpacity>
+      </View>
     </View>
-    {(item.coverUrl || item.image) ? (
-      <Image source={{ uri: item.coverUrl || item.image }} style={styles.adImage} resizeMode="cover" />
-    ) : null}
-    <View style={styles.adBody}>
-      <Text style={styles.adTitle}>{item.title}</Text>
-      {item.content ? <Text style={styles.adContent} numberOfLines={2}>{item.content}</Text> : null}
-      <TouchableOpacity style={styles.adCTA}>
-        <Text style={styles.adCTATxt}>{item.ctaLabel || "Learn More"}</Text>
-        <Ionicons name="arrow-forward" size={12} color="#000" />
-      </TouchableOpacity>
-    </View>
-  </View>
-));
+  );
+});
 
 // ── REACTION STRIP ────────────────────────────────────────────────────────
+// FIX 4: Added overlay to dismiss emoji picker when tapping outside
 const ReactionStrip = memo(({ postId, uid, reactions }: {
   postId: string; uid: string; reactions: Record<string, string[]>;
 }) => {
@@ -163,8 +172,16 @@ const ReactionStrip = memo(({ postId, uid, reactions }: {
     Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, friction: 6 }).start();
   };
 
+  const hidePicker = () => {
+    Animated.timing(scaleAnim, { 
+      toValue: 0, 
+      duration: 150, 
+      useNativeDriver: true 
+    }).start(() => setVisible(false));
+  };
+
   const react = async (emoji: string) => {
-    setVisible(false);
+    hidePicker();
     try {
       const already = reactions[emoji]?.includes(uid);
       const update: Record<string, any> = {};
@@ -193,70 +210,151 @@ const ReactionStrip = memo(({ postId, uid, reactions }: {
       <TouchableOpacity style={styles.reactionAddBtn} onPress={showPicker}>
         <Text style={styles.reactionAddTxt}>+</Text>
       </TouchableOpacity>
+      
+      {/* FIX 4: Dismissible overlay and picker */}
       {visible && (
-        <Animated.View style={[styles.reactionPicker, { transform: [{ scale: scaleAnim }] }]}>
-          {REACTIONS.map((emoji) => (
-            <TouchableOpacity key={emoji} style={styles.reactionPickerBtn} onPress={() => react(emoji)}>
-              <Text style={styles.reactionPickerEmoji}>{emoji}</Text>
-            </TouchableOpacity>
-          ))}
-        </Animated.View>
+        <>
+          <TouchableWithoutFeedback onPress={hidePicker}>
+            <View style={styles.reactionOverlay} />
+          </TouchableWithoutFeedback>
+          <Animated.View style={[styles.reactionPicker, { transform: [{ scale: scaleAnim }] }]}>
+            {REACTIONS.map((emoji) => (
+              <TouchableOpacity key={emoji} style={styles.reactionPickerBtn} onPress={() => react(emoji)}>
+                <Text style={styles.reactionPickerEmoji}>{emoji}</Text>
+              </TouchableOpacity>
+            ))}
+          </Animated.View>
+        </>
       )}
     </View>
   );
 });
 
-// ── QUICK COMMENT ─────────────────────────────────────────────────────────
-const QuickComment = memo(({ postId, uid, userPhoto, onDone }: any) => {
-  const [text,    setText]    = useState("");
+// ── COMMENT LIST ──────────────────────────────────────────────────────────
+// FIX 1: New component to display comments with real-time updates
+const CommentsModal = memo(({ visible, onClose, postId, uid, userPhoto, postAuthorId, onCommentAdded }: {
+  visible: boolean; onClose: () => void; postId: string; uid: string; 
+  userPhoto: string; postAuthorId: string; onCommentAdded?: () => void;
+}) => {
+  const [comments, setComments] = useState<any[]>([]);
+  const [text, setText] = useState("");
   const [posting, setPosting] = useState(false);
 
+  useEffect(() => {
+    if (!visible || !postId) return;
+    const q = query(collection(db, "feed", postId, "comments"), orderBy("createdAt", "desc"));
+    const unsub = onSnapshot(q, (snap) => {
+      setComments(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, [visible, postId]);
+
   const submit = async () => {
-    if (!text.trim()) return;
+    if (!text.trim() || !uid) return;
     setPosting(true);
     try {
+      const user = auth.currentUser;
       await addDoc(collection(db, "feed", postId, "comments"), {
-        content:   text.trim(),
-        userId:    uid,
+        content: text.trim(),
+        userId: uid,
+        userName: user?.displayName || "Scholar",
+        userPhoto: user?.photoURL || "",
         createdAt: serverTimestamp(),
       });
-      await updateDoc(doc(db, "feed", postId), {
-        commentsCount: increment(1),
-      });
+      
+      await updateDoc(doc(db, "feed", postId), { commentsCount: increment(1) });
+      onCommentAdded?.();
+      
+      // Notification for comment
+      if (postAuthorId && postAuthorId !== uid) {
+        await addDoc(collection(db, "users", postAuthorId, "notifications"), {
+          type: "comment",
+          message: `${user?.displayName || "Someone"} commented on your post`,
+          postId: postId,
+          fromUserId: uid,
+          fromUserName: user?.displayName || "Scholar",
+          fromUserPhoto: user?.photoURL || "",
+          read: false,
+          createdAt: serverTimestamp(),
+        });
+        await updateDoc(doc(db, "users", postAuthorId), { hasUnread: true });
+      }
+      
       setText("");
-      onDone?.();
-    } catch (e) { console.error(e); } finally { setPosting(false); }
+    } catch (e) { console.error(e); } 
+    finally { setPosting(false); }
   };
 
   return (
-    <View style={styles.quickComment}>
-      {userPhoto ? (
-        <Image source={{ uri: userPhoto }} style={styles.quickCommentAvatar} />
-      ) : (
-        <View style={[styles.quickCommentAvatar, styles.quickCommentAvatarFallback]}>
-          <Text style={{ color: THEME.accent, fontWeight: "900", fontSize: 10 }}>W</Text>
-        </View>
-      )}
-      <View style={styles.quickCommentInput}>
-        <TextInput
-          style={styles.quickCommentTxt}
-          placeholder="Write a comment..."
-          placeholderTextColor={THEME.textMuted}
-          value={text}
-          onChangeText={setText}
-          multiline
-          maxLength={500}
-        />
-        {text.length > 0 && (
-          <TouchableOpacity onPress={submit} disabled={posting}>
-            {posting
-              ? <ActivityIndicator size="small" color={THEME.accent} />
-              : <Ionicons name="send" size={16} color={THEME.accent} />
-            }
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet">
+      <SafeAreaView style={styles.commentModal}>
+        <View style={styles.commentHeader}>
+          <Text style={styles.commentTitle}>Comments ({comments.length})</Text>
+          <TouchableOpacity onPress={onClose} style={styles.commentCloseBtn}>
+            <Ionicons name="close" size={22} color={THEME.text} />
           </TouchableOpacity>
-        )}
-      </View>
-    </View>
+        </View>
+
+        <FlatList
+          data={comments}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={{ padding: 16 }}
+          ListEmptyComponent={
+            <View style={styles.emptyComments}>
+              <Ionicons name="chatbubbles-outline" size={48} color={THEME.textMuted} />
+              <Text style={styles.emptyCommentsTxt}>No comments yet</Text>
+            </View>
+          }
+          renderItem={({ item }) => (
+            <View style={styles.commentItem}>
+              {item.userPhoto ? (
+                <Image source={{ uri: item.userPhoto }} style={styles.commentAvatar} />
+              ) : (
+                <View style={[styles.commentAvatar, styles.commentAvatarFallback]}>
+                  <Text style={{ color: THEME.accent, fontWeight: "900", fontSize: 12 }}>
+                    {(item.userName || "W")[0].toUpperCase()}
+                  </Text>
+                </View>
+              )}
+              <View style={styles.commentContent}>
+                <View style={styles.commentBubble}>
+                  <Text style={styles.commentName}>{item.userName || "Scholar"}</Text>
+                  <Text style={styles.commentText}>{item.content}</Text>
+                </View>
+                <Text style={styles.commentTime}>{formatTime(item.createdAt)}</Text>
+              </View>
+            </View>
+          )}
+        />
+
+        <View style={styles.commentInputBar}>
+          {userPhoto ? (
+            <Image source={{ uri: userPhoto }} style={styles.commentInputAvatar} />
+          ) : (
+            <View style={[styles.commentInputAvatar, styles.commentAvatarFallback]}>
+              <Text style={{ color: THEME.accent, fontWeight: "900" }}>W</Text>
+            </View>
+          )}
+          <View style={styles.commentInputWrap}>
+            <TextInput
+              style={styles.commentInput}
+              placeholder="Write a comment..."
+              placeholderTextColor={THEME.textMuted}
+              value={text}
+              onChangeText={setText}
+              multiline
+            />
+            <TouchableOpacity onPress={submit} disabled={!text.trim() || posting}>
+              {posting ? (
+                <ActivityIndicator size="small" color={THEME.accent} />
+              ) : (
+                <Ionicons name="send" size={20} color={text.trim() ? THEME.accent : THEME.textMuted} />
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </SafeAreaView>
+    </Modal>
   );
 });
 
@@ -265,7 +363,8 @@ const NotificationsModal = memo(({ visible, onClose, uid }: {
   visible: boolean; onClose: () => void; uid: string;
 }) => {
   const [notifications, setNotifications] = useState<any[]>([]);
-  const [loading,       setLoading]       = useState(true);
+  const [loading, setLoading] = useState(true);
+  const router = useRouter();
 
   useEffect(() => {
     if (!visible || !uid) return;
@@ -281,7 +380,6 @@ const NotificationsModal = memo(({ visible, onClose, uid }: {
     return () => unsub();
   }, [visible, uid]);
 
-  // Mark all individual notifications as read
   useEffect(() => {
     if (!visible || !uid) return;
     const markRead = async () => {
@@ -332,6 +430,9 @@ const NotificationsModal = memo(({ visible, onClose, uid }: {
           <View style={styles.notifEmpty}>
             <Ionicons name="notifications-off-outline" size={48} color={THEME.textMuted} />
             <Text style={styles.notifEmptyTxt}>No notifications yet</Text>
+            <Text style={styles.notifEmptySub}>
+              Activity like likes, comments and follows will appear here
+            </Text>
           </View>
         ) : (
           <ScrollView showsVerticalScrollIndicator={false}>
@@ -362,19 +463,24 @@ const NotificationsModal = memo(({ visible, onClose, uid }: {
 
 // ── POST CARD ─────────────────────────────────────────────────────────────
 const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePress }: any) => {
-  const router     = useRouter();
-  const liked      = item.likedBy?.includes(uid);
-  const isOwner    = uid === item.userId || uid === item.authorId;
+  const router = useRouter();
+  const liked = item.likedBy?.includes(uid);
+  const isOwner = uid === item.userId || uid === item.authorId;
   const typeConfig = TYPE_CONFIG[item.type] || TYPE_CONFIG.discussion;
-  const [showComment, setShowComment] = useState(false);
-  const [bookmarked,  setBookmarked]  = useState(false);
+  
+  // FIX 1: State for showing comments section
+  const [showCommentsModal, setShowCommentsModal] = useState(false);
+  const [showComments, setShowComments] = useState(false);
+  const [bookmarked, setBookmarked] = useState(false);
+  const [localLikes, setLocalLikes] = useState(item.likesCount || 0);
+  const [localComments, setLocalComments] = useState(item.commentsCount || 0);
 
-  const fadeAnim   = useRef(new Animated.Value(0)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(20)).current;
 
   useEffect(() => {
     Animated.parallel([
-      Animated.timing(fadeAnim,   { toValue: 1, duration: 400, useNativeDriver: true }),
+      Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
       Animated.timing(translateY, { toValue: 0, duration: 400, useNativeDriver: true }),
     ]).start();
   }, []);
@@ -383,58 +489,47 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
     setBookmarked(!bookmarked);
     try {
       await updateDoc(doc(db, "users", uid, "bookmarks", item.id), {
-        postId:  item.id,
+        postId: item.id,
         savedAt: serverTimestamp(),
       });
     } catch (e) { console.error(e); }
   };
 
   const onShare = async () => {
-  const title   = item.title || item.content?.slice(0, 80) || "Check this out";
-  const baseUrl = "https://writha-book-app.vercel.app";
+    const title = item.title || item.content?.slice(0, 80) || "Check this out";
+    const baseUrl = "https://writha-book-app.vercel.app";
 
-  const url =
-    item.type === "article"  ? `${baseUrl}/article/${item.id}`  :
-    item.type === "research" ? `${baseUrl}/research/${item.id}` :
-    item.type === "book"     ? `${baseUrl}/book/${item.bookId || item.id}` :
-    item.type === "weave"    ? `${baseUrl}/weave/${item.originalId || item.id}` :
-                               `${baseUrl}/discussion/${item.id}`;
+    const url =
+      item.type === "article"  ? `${baseUrl}/article/${item.id}`  :
+      item.type === "research" ? `${baseUrl}/research/${item.id}` :
+      item.type === "book"     ? `${baseUrl}/book/${item.bookId || item.id}` :
+      item.type === "weave"    ? `${baseUrl}/weave/${item.originalId || item.id}` :
+                                 `${baseUrl}/discussion/${item.id}`;
 
-  if (Platform.OS === "web") {
-    if (navigator.share) {
-      // Native web share sheet — opens the OS share menu on mobile browsers
-      try {
-        await navigator.share({
-          title:  `${title} — Writha`,
-          text:   title,
-          url,
-        });
-      } catch (e) {
-        // User cancelled or browser blocked — fall back to clipboard
+    if (Platform.OS === "web") {
+      if (navigator.share) {
+        try {
+          await navigator.share({ title: `${title} — Writha`, text: title, url });
+        } catch {
+          await navigator.clipboard.writeText(url);
+          window.alert("Link copied to clipboard!");
+        }
+      } else {
         await navigator.clipboard.writeText(url);
-        window.alert("Link copied to clipboard!");
+        window.alert("Link copied to clipboard!\n\n" + url);
       }
-    } else {
-      // Desktop browser — copy link to clipboard
-      await navigator.clipboard.writeText(url);
-      window.alert("Link copied to clipboard!\n\n" + url);
+      return;
     }
-    return;
-  }
+    try {
+      await Share.share({
+        title: `${title} — Writha`,
+        message: Platform.OS === "android" ? `${title} — Writha\n${url}` : title,
+        url,
+      });
+    } catch (e) { console.error(e); }
+  };
 
-  // Native mobile — opens full OS share sheet (WhatsApp, Messages, etc.)
-  try {
-    await Share.share({
-      title:   `${title} — Writha`,
-      message: Platform.OS === "android" ? `${title} — Writha\n${url}` : title,
-      url,
-    });
-  } catch (e) {
-    console.error(e);
-  }
-};
-
-  // ── Navigate to correct detail screen ───────────────────────────
+  // FIX 2 & 6: Proper navigation for all post types including discussion
   const navigateToPost = () => {
     if (item.type === "book" || item.type === "book_update") {
       router.push(`/book/${item.bookId || item.originalId || item.id}` as any);
@@ -444,83 +539,61 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
       router.push(`/research/${item.originalId || item.id}` as any);
     } else if (item.type === "weave") {
       router.push(`/weave/${item.originalId || item.id}` as any);
-    } else {
+    } else if (item.type === "discussion") {
       router.push(`/discussion/${item.id}` as any);
+    } else {
+      // Default fallback
+      router.push(`/post/${item.id}` as any);
     }
   };
 
-  // ── Three dots menu ─────────────────────────────────────────────
   const handleSettings = () => {
     const baseOptions: any[] = [
-      {
-        text: "📤 Share",
-        onPress: onShare,
-      },
-      {
-        text: bookmarked ? "🔖 Saved" : "🔖 Bookmark",
-        onPress: handleBookmark,
-      },
-      {
-        text: "🚫 Hide Post",
-        onPress: () => showAlert("Hidden", "You won't see this post again.", [{ text: "OK" }]),
-      },
-      {
-        text: "⚠️ Report",
-        onPress: () => showAlert("Reported", "Thank you for keeping Writha safe.", [{ text: "OK" }]),
-      },
+      { text: "📤 Share", onPress: onShare },
+      { text: bookmarked ? "🔖 Saved" : "🔖 Bookmark", onPress: handleBookmark },
+      { text: "🚫 Hide Post", onPress: () => showAlert("Hidden", "You won't see this post again.", [{ text: "OK" }]) },
+      { text: "⚠️ Report", onPress: () => showAlert("Reported", "Thank you for keeping Writha safe.", [{ text: "OK" }]) },
     ];
-
-    // Owner options
+    
     if (isOwner) {
-      // Weave owners can edit
       if (item.type === "weave") {
         baseOptions.unshift({
           text: "✏️ Edit Weave",
           onPress: () => router.push(`/weave/edit?id=${item.originalId || item.id}` as any),
         });
       }
-      // All owners can delete
       baseOptions.unshift({
         text: "🗑️ Delete Post",
         style: "destructive",
         onPress: () =>
-          showAlert(
-            "Delete Post",
-            "This cannot be undone.",
-            [
-              { text: "Cancel", style: "cancel" },
-              {
-                text: "Delete",
-                style: "destructive",
-                onPress: async () => {
-                  try {
-                    await deleteDoc(doc(db, "feed", item.id));
-                    // Also delete from weaves collection if it's a weave
-                    if (item.type === "weave" && item.originalId) {
-                      await deleteDoc(doc(db, "weaves", item.originalId));
-                    }
-                  } catch (e) { console.error(e); }
-                },
+          showAlert("Delete Post", "This cannot be undone.", [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Delete",
+              style: "destructive",
+              onPress: async () => {
+                try {
+                  await deleteDoc(doc(db, "feed", item.id));
+                  if (item.type === "weave" && item.originalId) {
+                    await deleteDoc(doc(db, "weaves", item.originalId));
+                  }
+                } catch (e) { console.error(e); }
               },
-            ]
-          ),
+            },
+          ]),
       });
     }
-
     baseOptions.push({ text: "Cancel", style: "cancel" });
-
     showAlert("Post Options", "", baseOptions);
   };
 
   if (item.type === "ad") return <AdCard item={item} />;
 
-  const authorName   = item.userName   || item.authorName  || item.displayName || item.fullName || "Scholar";
-  const authorHandle = item.userHandle || item.authorUsername || item.username  || authorName.toLowerCase().replace(/\s/g, "");
-  const authorPhoto  =
-    item.userPhoto   || item.authorPhoto || item.photoURL ||
+  const authorName = item.userName || item.authorName || item.displayName || item.fullName || "Scholar";
+  const authorHandle = item.userHandle || item.authorUsername || item.username || authorName.toLowerCase().replace(/\s/g, "");
+  const authorPhoto = item.userPhoto || item.authorPhoto || item.photoURL ||
     `https://ui-avatars.com/api/?name=${encodeURIComponent(authorName)}&background=170D2E&color=FFD700&bold=true`;
 
-  // ── ADMIN CARD ──────────────────────────────────────────────────
   if (item.type === "admin") {
     return (
       <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY }] }}>
@@ -561,22 +634,24 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
         <Text style={[styles.typeBadgeTxt, { color: typeConfig.color }]}>{typeConfig.label}</Text>
       </View>
 
-      {/* AUTHOR ROW */}
+      {/* FIX 3: Only avatar is tappable for profile, name is not */}
       <View style={styles.authorRow}>
-        <TouchableOpacity
-          style={styles.authorLeft}
-          onPress={() => onProfilePress(item.userId || item.authorId)}
-          activeOpacity={0.8}
-        >
-          <LinearGradient
-            colors={[THEME.accent, THEME.purpleLight, THEME.purple]}
-            style={styles.avatarRing}
-            start={{ x: 0, y: 1 }} end={{ x: 1, y: 0 }}
+        <View style={styles.authorLeft}>
+          <TouchableOpacity
+            onPress={() => onProfilePress(item.userId || item.authorId)}
+            activeOpacity={0.8}
           >
-            <View style={styles.avatarInner}>
-              <Image source={{ uri: authorPhoto }} style={styles.avatar} />
-            </View>
-          </LinearGradient>
+            <LinearGradient
+              colors={[THEME.accent, THEME.purpleLight, THEME.purple]}
+              style={styles.avatarRing}
+              start={{ x: 0, y: 1 }} end={{ x: 1, y: 0 }}
+            >
+              <View style={styles.avatarInner}>
+                <Image source={{ uri: authorPhoto }} style={styles.avatar} />
+              </View>
+            </LinearGradient>
+          </TouchableOpacity>
+
           <View style={styles.authorInfo}>
             <View style={styles.authorNameRow}>
               <Text style={styles.authorName}>{authorName}</Text>
@@ -593,7 +668,7 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
               <Text style={styles.postTime}>{formatTime(item.createdAt)}</Text>
             </View>
           </View>
-        </TouchableOpacity>
+        </View>
 
         <TouchableOpacity
           style={styles.moreBtn}
@@ -604,10 +679,9 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
         </TouchableOpacity>
       </View>
 
-      {/* POST CONTENT */}
+      {/* Post content - tappable to open detail */}
       <TouchableOpacity onPress={navigateToPost} activeOpacity={0.9}>
 
-        {/* Book */}
         {(item.type === "book" || item.type === "book_update") && (
           <View style={styles.bookPreviewRow}>
             <Image
@@ -637,7 +711,6 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
           </View>
         )}
 
-        {/* Research */}
         {item.type === "research" && (
           <View style={styles.researchCard}>
             <View style={styles.researchHeader}>
@@ -664,7 +737,6 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
           </View>
         )}
 
-        {/* Discussion / Article */}
         {(item.type === "discussion" || item.type === "article" || !item.type) && (
           <View>
             {item.title && <Text style={styles.postTitle}>{item.title}</Text>}
@@ -689,12 +761,10 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
           </View>
         )}
 
-        {/* ── WEAVE CARD — shows actual type ── */}
         {item.type === "weave" && (
           <View style={[styles.weaveCard, {
             borderColor: (WEAVE_TYPE_COLOR[item.weaveType] || "#F59E0B") + "30",
           }]}>
-            {/* Weave type header */}
             <View style={styles.weaveHeader}>
               <MaterialCommunityIcons
                 name={(WEAVE_TYPE_ICON[item.weaveType] || "feather") as any}
@@ -707,8 +777,6 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
                 {(item.weaveType || "WEAVE").toUpperCase()}
               </Text>
             </View>
-
-            {/* Book reference */}
             {item.bookTitle && (
               <View style={styles.weaveBookRefRow}>
                 <Ionicons name="book-outline" size={11} color={THEME.textMuted} />
@@ -718,29 +786,23 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
                 </Text>
               </View>
             )}
-
-            {/* Title or content preview */}
             {item.title
               ? <Text style={styles.postTitle} numberOfLines={2}>{item.title}</Text>
               : <Text style={styles.postText} numberOfLines={3}>{item.content}</Text>
             }
-
-            {/* Rating for Critique weaves */}
             {item.weaveType === "Critique" && item.rating && (
               <View style={styles.weaveRatingRow}>
                 <Text style={[styles.weaveRating, { color: WEAVE_TYPE_COLOR["Critique"] }]}>
                   {item.rating}/10
                 </Text>
                 <Text style={styles.weaveRatingLabel}>
-                  {Number(item.rating) >= 9 ? "Masterpiece"        :
+                  {Number(item.rating) >= 9 ? "Masterpiece" :
                    Number(item.rating) >= 7 ? "Highly Recommended" :
-                   Number(item.rating) >= 5 ? "Worth Reading"      :
-                                              "Has Merit"          }
+                   Number(item.rating) >= 5 ? "Worth Reading" :
+                                              "Has Merit"}
                 </Text>
               </View>
             )}
-
-            {/* External book badge */}
             {item.isExternalBook && (
               <View style={styles.externalBadge}>
                 <Ionicons name="globe-outline" size={10} color={THEME.textMuted} />
@@ -759,7 +821,7 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
 
       <ReactionStrip postId={item.id} uid={uid} reactions={item.reactions || {}} />
 
-      {/* ACTION BAR */}
+      {/* FIX 1 & 2: Action bar with working View button and Comment toggle */}
       <View style={styles.actionBar}>
         <TouchableOpacity
           style={styles.actionBtn}
@@ -778,13 +840,20 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
 
         <TouchableOpacity
           style={styles.actionBtn}
-          onPress={() => setShowComment(!showComment)}
+          onPress={() => setShowCommentsModal(!showComments)}
           activeOpacity={0.7}
         >
-          <Ionicons name="chatbubble-outline" size={18} color={THEME.textMuted} />
-          <Text style={styles.actionTxt}>{item.commentsCount || 0}</Text>
+          <Ionicons
+            name={showComments ? "chatbubble" : "chatbubble-outline"}
+            size={18}
+            color={showComments ? THEME.blue : THEME.textMuted}
+          />
+          <Text style={[styles.actionTxt, showComments && { color: THEME.blue }]}>
+            {item.commentsCount || 0}
+          </Text>
         </TouchableOpacity>
 
+        {/* FIX 2: View button now correctly navigates */}
         <TouchableOpacity
           style={styles.actionBtn}
           onPress={navigateToPost}
@@ -807,14 +876,15 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
         </TouchableOpacity>
       </View>
 
-      {showComment && (
-        <QuickComment
-          postId={item.id}
-          uid={uid}
-          userPhoto={userPhoto}
-          onDone={() => setShowComment(false)}
-        />
-      )}
+      {/* FIX 1: Show comments section when toggled */}
+      <CommentsModal
+        visible={showCommentsModal}
+        onClose={() => setShowCommentsModal(false)}
+        postId={item.id}
+        uid={uid}
+        userPhoto={userPhoto}
+        postAuthorId={item.userId || item.authorId}
+      />
     </Animated.View>
   );
 });
@@ -822,23 +892,23 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
 // ── MAIN SCREEN ───────────────────────────────────────────────────────────
 export default function GlobalFeedTab() {
   const router = useRouter();
-  const uid    = auth.currentUser?.uid;
+  const uid = auth.currentUser?.uid;
 
-  const [posts,       setPosts]       = useState<any[]>([]);
-  const [userData,    setUserData]    = useState<any>(null);
+  const [posts, setPosts] = useState<any[]>([]);
+  const [userData, setUserData] = useState<any>(null);
   const [activeUsers, setActiveUsers] = useState<any[]>([]);
-  const [loading,     setLoading]     = useState(true);
-  const [refreshing,  setRefreshing]  = useState(false);
-  const [lastDoc,     setLastDoc]     = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastDoc, setLastDoc] = useState<any>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [filterTab,   setFilterTab]   = useState("all");
-  const [showNotifs,  setShowNotifs]  = useState(false);
+  const [filterTab, setFilterTab] = useState("all");
+  const [showNotifs, setShowNotifs] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
-  const scrollY          = useRef(new Animated.Value(0)).current;
-  const feedUnsubRef     = useRef<(() => void) | null>(null);
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const feedUnsubRef = useRef<(() => void) | null>(null);
 
-  // ── USER DATA ──────────────────────────────────────────────────────
+  // User data listener
   useEffect(() => {
     if (!uid) return;
     const unsub = onSnapshot(doc(db, "users", uid), (snap) => {
@@ -847,7 +917,7 @@ export default function GlobalFeedTab() {
     return () => unsub();
   }, [uid]);
 
-  // ── UNREAD COUNT ───────────────────────────────────────────────────
+  // FIX 5: Real-time unread notifications count
   useEffect(() => {
     if (!uid) return;
     const q = query(
@@ -858,7 +928,7 @@ export default function GlobalFeedTab() {
     return () => unsub();
   }, [uid]);
 
-  // ── ACTIVE USERS ───────────────────────────────────────────────────
+  // Active users listener
   useEffect(() => {
     const q = query(
       collection(db, "users"),
@@ -871,18 +941,15 @@ export default function GlobalFeedTab() {
     return () => unsub();
   }, []);
 
-  // ── FETCH FEED ─────────────────────────────────────────────────────
+  // Fetch feed
   const fetchFeed = useCallback(() => {
-    // Unsubscribe previous listener
     if (feedUnsubRef.current) feedUnsubRef.current();
-
     setLoading(true);
     const q = query(
       collection(db, "feed"),
       orderBy("createdAt", "desc"),
       limit(PAGE_SIZE)
     );
-
     const unsub = onSnapshot(
       q,
       (snap) => {
@@ -898,7 +965,6 @@ export default function GlobalFeedTab() {
         setRefreshing(false);
       }
     );
-
     feedUnsubRef.current = unsub;
     return unsub;
   }, []);
@@ -908,27 +974,24 @@ export default function GlobalFeedTab() {
     return () => unsub();
   }, [fetchFeed]);
 
-  // ── REFRESH ────────────────────────────────────────────────────────
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     setLastDoc(null);
     fetchFeed();
   }, [fetchFeed]);
 
-  // ── AD INJECTION ──────────────────────────────────────────────────
   const injectAds = (items: any[]): any[] => {
     const adPlaceholder = {
-      id:       `ad_${Date.now()}`,
-      type:     "ad",
-      title:    "Grow Your Readership on Writha",
-      content:  "Reach thousands of active readers. Advertise your book today.",
+      id: `ad_${Date.now()}`,
+      type: "ad",
+      title: "Grow Your Readership on Writha",
+      content: "Reach thousands of active readers. Advertise your book today.",
       ctaLabel: "Get Started",
     };
     if (items.length < 5) return items;
     return [...items.slice(0, 5), adPlaceholder, ...items.slice(5)];
   };
 
-  // ── LOAD MORE ──────────────────────────────────────────────────────
   const loadMore = async () => {
     if (!lastDoc || loadingMore) return;
     setLoadingMore(true);
@@ -939,37 +1002,41 @@ export default function GlobalFeedTab() {
         startAfter(lastDoc),
         limit(PAGE_SIZE)
       );
-      const snap     = await getDocs(q);
+      const snap = await getDocs(q);
       const newItems = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       setPosts((prev) => [...prev, ...newItems]);
       setLastDoc(snap.docs[snap.docs.length - 1]);
-    } catch (e) { console.error(e); } finally { setLoadingMore(false); }
+    } catch (e) { console.error(e); } 
+    finally { setLoadingMore(false); }
   };
 
-  // ── LIKE ───────────────────────────────────────────────────────────
+  // FIX 5: Enhanced toggleLike with proper notification creation
   const toggleLike = useCallback(async (post: any) => {
     if (!uid) return;
     const liked = post.likedBy?.includes(uid);
     try {
       await updateDoc(doc(db, "feed", post.id), {
-        likedBy:    liked ? arrayRemove(uid) : arrayUnion(uid),
+        likedBy: liked ? arrayRemove(uid) : arrayUnion(uid),
         likesCount: increment(liked ? -1 : 1),
       });
+      
+      // Create notification on like (not unlike), and don't notify yourself
       if (!liked && post.userId && post.userId !== uid) {
         await addDoc(collection(db, "users", post.userId, "notifications"), {
-          type:       "like",
-          message:    `${userData?.displayName || "Someone"} liked your post`,
-          postId:     post.id,
+          type: "like",
+          message: `${userData?.displayName || "Someone"} liked your post`,
+          postId: post.id,
           fromUserId: uid,
-          read:       false,
-          createdAt:  serverTimestamp(),
+          fromUserName: userData?.displayName || "Scholar",
+          fromUserPhoto: userData?.photoURL || "",
+          read: false,
+          createdAt: serverTimestamp(),
         });
         await updateDoc(doc(db, "users", post.userId), { hasUnread: true });
       }
     } catch (e) { console.error(e); }
   }, [uid, userData]);
 
-  // ── FILTERED POSTS ────────────────────────────────────────────────
   const filteredPosts = filterTab === "all"
     ? posts
     : posts.filter((p) =>
@@ -994,7 +1061,7 @@ export default function GlobalFeedTab() {
     <SafeAreaView style={styles.container} edges={["top"]}>
       <StatusBar barStyle="light-content" />
 
-      {/* HEADER */}
+      {/* Header */}
       <Animated.View style={[styles.header, { opacity: headerOpacity }]}>
         <View>
           <Text style={styles.brandSub}>WRITHA</Text>
@@ -1048,7 +1115,7 @@ export default function GlobalFeedTab() {
         onEndReachedThreshold={0.4}
         ListHeaderComponent={
           <View>
-            {/* STORY RINGS */}
+            {/* Story rings */}
             {activeUsers.length > 0 && (
               <View style={styles.storySection}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -1080,7 +1147,7 @@ export default function GlobalFeedTab() {
               </View>
             )}
 
-            {/* FILTER TABS */}
+            {/* Filter tabs */}
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -1149,131 +1216,200 @@ export default function GlobalFeedTab() {
 }
 
 const styles = StyleSheet.create({
-  container:                { flex: 1, backgroundColor: THEME.bg },
-  center:                   { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: THEME.bg },
-  header:                   { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  brandSub:                 { color: THEME.purple, fontSize: 10, fontWeight: "900", letterSpacing: 4 },
-  brandMain:                { color: THEME.text, fontSize: 40, fontWeight: "900", letterSpacing: -2, marginTop: -4 },
-  headerRight:              { flexDirection: "row", alignItems: "center", gap: 10 },
-  headerIconBtn:            { width: 42, height: 42, borderRadius: 14, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: THEME.border },
-  notifBadge:               { position: "absolute", top: 6, right: 6, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: THEME.red, justifyContent: "center", alignItems: "center", paddingHorizontal: 2 },
-  notifBadgeTxt:            { color: "#fff", fontSize: 8, fontWeight: "900" },
-  headerAvatarBtn:          {},
-  headerAvatarRing:         { padding: 2, borderRadius: 16 },
-  headerAvatarImg:          { width: 36, height: 36, borderRadius: 13, borderWidth: 2, borderColor: THEME.bg },
-  storySection:             { marginBottom: 8 },
-  storyRow:                 { flexDirection: "row", paddingHorizontal: 16, gap: 14, paddingVertical: 4 },
-  storyItem:                { alignItems: "center", width: 60 },
-  storyRing:                { width: 58, height: 58, borderRadius: 18, justifyContent: "center", alignItems: "center" },
-  storyInner:               { width: 52, height: 52, borderRadius: 16, backgroundColor: THEME.bg, justifyContent: "center", alignItems: "center" },
-  storyAvatar:              { width: 48, height: 48, borderRadius: 15 },
-  storyName:                { color: THEME.textMuted, fontSize: 10, marginTop: 5, fontWeight: "700", textAlign: "center" },
-  myStoryRing:              { width: 58, height: 58, borderRadius: 18, backgroundColor: THEME.ui2, justifyContent: "center", alignItems: "center", borderWidth: 2, borderColor: THEME.border, position: "relative" },
-  myStoryAdd:               { position: "absolute", bottom: -2, right: -2, width: 18, height: 18, borderRadius: 6, backgroundColor: THEME.accent, justifyContent: "center", alignItems: "center", borderWidth: 2, borderColor: THEME.bg },
-  filterScroll:             { marginBottom: 8 },
-  filterContent:            { paddingHorizontal: 16, gap: 8 },
-  filterTab:                { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.border },
-  filterTabActive:          { backgroundColor: THEME.accent, borderColor: THEME.accent },
-  filterTabTxt:             { color: THEME.textMuted, fontWeight: "700", fontSize: 12 },
-  filterTabTxtActive:       { color: "#000" },
-  listContent:              { paddingHorizontal: 14, paddingBottom: 120 },
-  card:                     { backgroundColor: THEME.ui, borderRadius: 24, padding: 18, marginBottom: 16, borderWidth: 1, borderColor: THEME.border },
-  pinnedStrip:              { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 8 },
-  pinnedTxt:                { color: THEME.accent, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
-  typeBadge:                { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 8, alignSelf: "flex-start", marginBottom: 12 },
-  typeBadgeTxt:             { fontSize: 9, fontWeight: "900", letterSpacing: 1 },
-  authorRow:                { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
-  authorLeft:               { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
-  avatarRing:               { width: 46, height: 46, borderRadius: 15, justifyContent: "center", alignItems: "center" },
-  avatarInner:              { width: 40, height: 40, borderRadius: 13, backgroundColor: THEME.bg, justifyContent: "center", alignItems: "center" },
-  avatar:                   { width: 36, height: 36, borderRadius: 11 },
-  authorInfo:               { flex: 1 },
-  authorNameRow:            { flexDirection: "row", alignItems: "center" },
-  authorName:               { color: THEME.text, fontWeight: "800", fontSize: 14 },
-  authorMeta:               { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 2 },
-  authorHandle:             { color: THEME.accent, fontSize: 11, fontWeight: "700" },
-  authorDot:                { color: THEME.textMuted, fontSize: 11 },
-  postTime:                 { color: THEME.textMuted, fontSize: 11 },
-  moreBtn:                  { padding: 4 },
-  postTitle:                { color: THEME.text, fontSize: 18, fontWeight: "900", marginBottom: 8, lineHeight: 24 },
-  postText:                 { color: "#B0A8C0", fontSize: 14, lineHeight: 22, marginBottom: 12 },
-  postImage:                { width: "100%", height: 210, borderRadius: 18, marginBottom: 12 },
-  bookPreviewRow:           { flexDirection: "row", gap: 14, marginBottom: 8 },
-  bookPreviewCover:         { width: 80, height: 115, borderRadius: 12, borderWidth: 2, borderColor: THEME.accent + "40" },
-  bookPreviewInfo:          { flex: 1 },
-  genrePill:                { backgroundColor: THEME.ui3, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, alignSelf: "flex-start", marginBottom: 6 },
-  genrePillTxt:             { color: THEME.purpleLight, fontSize: 9, fontWeight: "900" },
-  pricePill:                { backgroundColor: THEME.accentDim, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: "flex-start", marginTop: 6 },
-  pricePillTxt:             { color: THEME.accent, fontSize: 11, fontWeight: "900" },
-  researchCard:             { backgroundColor: "rgba(0,209,255,0.05)", borderRadius: 16, padding: 14, borderWidth: 1, borderColor: "rgba(0,209,255,0.15)" },
-  researchHeader:           { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
-  researchField:            { color: "#00D1FF", fontSize: 10, fontWeight: "900", letterSpacing: 1 },
-  researchFooter:           { flexDirection: "row", gap: 8, marginTop: 8 },
-  researchTag:              { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: THEME.ui2, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
-  researchTagTxt:           { color: THEME.textMuted, fontSize: 10 },
-  readTimePill:             { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "rgba(56,189,248,0.1)", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: "flex-start" },
-  readTimeTxt:              { color: THEME.blue, fontSize: 10, fontWeight: "700" },
-  weaveCard:                { backgroundColor: "rgba(245,158,11,0.06)", borderRadius: 16, padding: 14, borderWidth: 1 },
-  weaveHeader:              { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
-  weaveTypeTxt:             { fontSize: 10, fontWeight: "900", letterSpacing: 1 },
-  weaveBookRefRow:          { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 8 },
-  weaveBookRef:             { color: THEME.textMuted, fontSize: 12, flex: 1 },
-  weaveRatingRow:           { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8 },
-  weaveRating:              { fontSize: 18, fontWeight: "900" },
-  weaveRatingLabel:         { color: THEME.textMuted, fontSize: 11, fontWeight: "700" },
-  externalBadge:            { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 8 },
-  externalBadgeTxt:         { color: THEME.textMuted, fontSize: 10 },
-  adminCard:                { borderRadius: 24, padding: 20, marginBottom: 16, borderWidth: 1, borderColor: THEME.purple + "50" },
-  adminCardHeader:          { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  adminBadge:               { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accentDim, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
-  adminBadgeTxt:            { color: THEME.accent, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
-  adminTitle:               { color: THEME.text, fontSize: 18, fontWeight: "900", marginBottom: 8 },
-  adminContent:             { color: "#B0A8C0", fontSize: 14, lineHeight: 22 },
-  moodTag:                  { backgroundColor: THEME.ui2, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: "flex-start", marginBottom: 10 },
-  moodTagTxt:               { color: THEME.purpleLight, fontSize: 11, fontWeight: "700" },
-  reactionWrap:             { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 10, position: "relative" },
-  reactionPill:             { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: THEME.ui2, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10, borderWidth: 1, borderColor: THEME.border },
-  reactionPillActive:       { borderColor: THEME.accent, backgroundColor: THEME.accentDim },
-  reactionEmoji:            { fontSize: 13 },
-  reactionCount:            { color: THEME.textMuted, fontSize: 11, fontWeight: "700" },
-  reactionAddBtn:           { width: 30, height: 26, borderRadius: 10, backgroundColor: THEME.ui2, justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: THEME.border },
-  reactionAddTxt:           { color: THEME.textMuted, fontSize: 16, fontWeight: "900", marginTop: -2 },
-  reactionPicker:           { position: "absolute", bottom: 36, left: 0, flexDirection: "row", gap: 4, backgroundColor: THEME.ui3, borderRadius: 16, padding: 8, borderWidth: 1, borderColor: THEME.border, zIndex: 100 },
-  reactionPickerBtn:        { padding: 4 },
-  reactionPickerEmoji:      { fontSize: 22 },
-  actionBar:                { flexDirection: "row", alignItems: "center", gap: 4, paddingTop: 12, borderTopWidth: 1, borderTopColor: THEME.border },
-  actionBtn:                { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 6, borderRadius: 10 },
-  actionTxt:                { color: THEME.textMuted, fontSize: 13, fontWeight: "700" },
-  quickComment:             { flexDirection: "row", gap: 10, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: THEME.border, alignItems: "flex-end" },
-  quickCommentAvatar:       { width: 30, height: 30, borderRadius: 10 },
-  quickCommentAvatarFallback:{ backgroundColor: THEME.purple, justifyContent: "center", alignItems: "center" },
-  quickCommentInput:        { flex: 1, flexDirection: "row", alignItems: "flex-end", backgroundColor: THEME.ui2, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 8, gap: 8, borderWidth: 1, borderColor: THEME.border },
-  quickCommentTxt:          { flex: 1, color: THEME.text, fontSize: 13, maxHeight: 80 },
-  adCard:                   { backgroundColor: THEME.ui, borderRadius: 20, overflow: "hidden", marginBottom: 16, borderWidth: 1, borderColor: THEME.border },
-  adLabel:                  { flexDirection: "row", alignItems: "center", gap: 4, padding: 10, paddingBottom: 0 },
-  adLabelTxt:               { color: THEME.textMuted, fontSize: 10, fontWeight: "600" },
-  adImage:                  { width: "100%", height: 160 },
-  adBody:                   { padding: 14 },
-  adTitle:                  { color: THEME.text, fontWeight: "800", fontSize: 15, marginBottom: 4 },
-  adContent:                { color: THEME.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 12 },
-  adCTA:                    { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accent, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, alignSelf: "flex-start" },
-  adCTATxt:                 { color: "#000", fontWeight: "900", fontSize: 12 },
-  loadMoreIndicator:        { paddingVertical: 20, alignItems: "center" },
-  emptyState:               { paddingVertical: 80, alignItems: "center" },
-  emptyTitle:               { color: THEME.text, fontSize: 18, fontWeight: "800", marginTop: 16 },
-  emptySub:                 { color: THEME.textMuted, fontSize: 13, marginTop: 8, textAlign: "center", lineHeight: 20 },
-  notifModal:               { flex: 1, backgroundColor: THEME.bg },
-  notifHeader:              { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, paddingTop: 60, borderBottomWidth: 1, borderBottomColor: THEME.border },
-  notifTitle:               { color: THEME.text, fontSize: 22, fontWeight: "900" },
-  notifCloseBtn:            { width: 36, height: 36, borderRadius: 12, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center" },
-  notifLoader:              { flex: 1, justifyContent: "center", alignItems: "center" },
-  notifEmpty:               { flex: 1, justifyContent: "center", alignItems: "center", gap: 12 },
-  notifEmptyTxt:            { color: THEME.textMuted, fontSize: 16, fontWeight: "600" },
-  notifItem:                { flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderBottomWidth: 1, borderBottomColor: THEME.border },
-  notifItemUnread:          { backgroundColor: THEME.accentDim },
-  notifIconCircle:          { width: 40, height: 40, borderRadius: 13, justifyContent: "center", alignItems: "center" },
-  notifContent:             { flex: 1 },
-  notifItemTxt:             { color: THEME.text, fontSize: 13, lineHeight: 18 },
-  notifItemTime:            { color: THEME.textMuted, fontSize: 11, marginTop: 3 },
-  unreadDot:                { width: 8, height: 8, borderRadius: 4, backgroundColor: THEME.accent },
+  container: { flex: 1, backgroundColor: THEME.bg },
+  center: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: THEME.bg },
+  
+  // Header
+  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  brandSub: { color: THEME.purple, fontSize: 10, fontWeight: "900", letterSpacing: 4 },
+  brandMain: { color: THEME.text, fontSize: 40, fontWeight: "900", letterSpacing: -2, marginTop: -4 },
+  headerRight: { flexDirection: "row", alignItems: "center", gap: 10 },
+  headerIconBtn: { width: 42, height: 42, borderRadius: 14, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: THEME.border, position: "relative" },
+  notifBadge: { position: "absolute", top: 6, right: 6, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: THEME.red, justifyContent: "center", alignItems: "center", paddingHorizontal: 2 },
+  notifBadgeTxt: { color: "#fff", fontSize: 8, fontWeight: "900" },
+  headerAvatarBtn: {},
+  headerAvatarRing: { padding: 2, borderRadius: 16 },
+  headerAvatarImg: { width: 36, height: 36, borderRadius: 13, borderWidth: 2, borderColor: THEME.bg },
+  
+  // Stories
+  storySection: { marginBottom: 8 },
+  storyRow: { flexDirection: "row", paddingHorizontal: 16, gap: 14, paddingVertical: 4 },
+  storyItem: { alignItems: "center", width: 60 },
+  storyRing: { width: 58, height: 58, borderRadius: 18, justifyContent: "center", alignItems: "center" },
+  storyInner: { width: 52, height: 52, borderRadius: 16, backgroundColor: THEME.bg, justifyContent: "center", alignItems: "center" },
+  storyAvatar: { width: 48, height: 48, borderRadius: 15 },
+  storyName: { color: THEME.textMuted, fontSize: 10, marginTop: 5, fontWeight: "700", textAlign: "center" },
+  myStoryRing: { width: 58, height: 58, borderRadius: 18, backgroundColor: THEME.ui2, justifyContent: "center", alignItems: "center", borderWidth: 2, borderColor: THEME.border, position: "relative" },
+  myStoryAdd: { position: "absolute", bottom: -2, right: -2, width: 18, height: 18, borderRadius: 6, backgroundColor: THEME.accent, justifyContent: "center", alignItems: "center", borderWidth: 2, borderColor: THEME.bg },
+  
+  // Filter tabs
+  filterScroll: { marginBottom: 8 },
+  filterContent: { paddingHorizontal: 16, gap: 8 },
+  filterTab: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.border },
+  filterTabActive: { backgroundColor: THEME.accent, borderColor: THEME.accent },
+  filterTabTxt: { color: THEME.textMuted, fontWeight: "700", fontSize: 12 },
+  filterTabTxtActive: { color: "#000" },
+  
+  // Feed
+  listContent: { paddingHorizontal: 14, paddingBottom: 120 },
+  
+  // Post card
+  card: { backgroundColor: THEME.ui, borderRadius: 24, padding: 18, marginBottom: 16, borderWidth: 1, borderColor: THEME.border },
+  pinnedStrip: { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 8 },
+  pinnedTxt: { color: THEME.accent, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  typeBadge: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 8, alignSelf: "flex-start", marginBottom: 12 },
+  typeBadgeTxt: { fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  
+  // FIX 3: Author row - avatar only is tappable
+  authorRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  authorLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
+  avatarRing: { width: 46, height: 46, borderRadius: 15, justifyContent: "center", alignItems: "center" },
+  avatarInner: { width: 40, height: 40, borderRadius: 13, backgroundColor: THEME.bg, justifyContent: "center", alignItems: "center" },
+  avatar: { width: 36, height: 36, borderRadius: 11 },
+  authorInfo: { flex: 1 },
+  authorNameRow: { flexDirection: "row", alignItems: "center" },
+  authorName: { color: THEME.text, fontWeight: "800", fontSize: 14 },
+  authorMeta: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 2 },
+  authorHandle: { color: THEME.accent, fontSize: 11, fontWeight: "700" },
+  authorDot: { color: THEME.textMuted, fontSize: 11 },
+  postTime: { color: THEME.textMuted, fontSize: 11 },
+  moreBtn: { padding: 4 },
+  
+  // Content
+  postTitle: { color: THEME.text, fontSize: 18, fontWeight: "900", marginBottom: 8, lineHeight: 24 },
+  postText: { color: "#B0A8C0", fontSize: 14, lineHeight: 22, marginBottom: 12 },
+  postImage: { width: "100%", height: 210, borderRadius: 18, marginBottom: 12 },
+  
+  // Book preview
+  bookPreviewRow: { flexDirection: "row", gap: 14, marginBottom: 8 },
+  bookPreviewCover: { width: 80, height: 115, borderRadius: 12, borderWidth: 2, borderColor: THEME.accent + "40" },
+  bookPreviewInfo: { flex: 1 },
+  genrePill: { backgroundColor: THEME.ui3, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, alignSelf: "flex-start", marginBottom: 6 },
+  genrePillTxt: { color: THEME.purpleLight, fontSize: 9, fontWeight: "900" },
+  pricePill: { backgroundColor: THEME.accentDim, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: "flex-start", marginTop: 6 },
+  pricePillTxt: { color: THEME.accent, fontSize: 11, fontWeight: "900" },
+  
+  // Research
+  researchCard: { backgroundColor: "rgba(0,209,255,0.05)", borderRadius: 16, padding: 14, borderWidth: 1, borderColor: "rgba(0,209,255,0.15)" },
+  researchHeader: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
+  researchField: { color: "#00D1FF", fontSize: 10, fontWeight: "900", letterSpacing: 1 },
+  researchFooter: { flexDirection: "row", gap: 8, marginTop: 8 },
+  researchTag: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: THEME.ui2, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  researchTagTxt: { color: THEME.textMuted, fontSize: 10 },
+  
+  // Weave
+  weaveCard: { backgroundColor: "rgba(245,158,11,0.06)", borderRadius: 16, padding: 14, borderWidth: 1 },
+  weaveHeader: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
+  weaveTypeTxt: { fontSize: 10, fontWeight: "900", letterSpacing: 1 },
+  weaveBookRefRow: { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 8 },
+  weaveBookRef: { color: THEME.textMuted, fontSize: 12, flex: 1 },
+  weaveRatingRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8 },
+  weaveRating: { fontSize: 18, fontWeight: "900" },
+  weaveRatingLabel: { color: THEME.textMuted, fontSize: 11, fontWeight: "700" },
+  externalBadge: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 8 },
+  externalBadgeTxt: { color: THEME.textMuted, fontSize: 10 },
+  
+  // Read time
+  readTimePill: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "rgba(56,189,248,0.1)", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: "flex-start" },
+  readTimeTxt: { color: THEME.blue, fontSize: 10, fontWeight: "700" },
+  
+  // Mood
+  moodTag: { backgroundColor: THEME.ui2, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, alignSelf: "flex-start", marginBottom: 10 },
+  moodTagTxt: { color: THEME.purpleLight, fontSize: 11, fontWeight: "700" },
+  
+  // FIX 4: Reactions with dismiss overlay
+  reactionWrap: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 10, position: "relative" },
+  reactionPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: THEME.ui2, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10, borderWidth: 1, borderColor: THEME.border },
+  reactionPillActive: { borderColor: THEME.accent, backgroundColor: THEME.accentDim },
+  reactionEmoji: { fontSize: 13 },
+  reactionCount: { color: THEME.textMuted, fontSize: 11, fontWeight: "700" },
+  reactionAddBtn: { width: 30, height: 26, borderRadius: 10, backgroundColor: THEME.ui2, justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: THEME.border },
+  reactionAddTxt: { color: THEME.textMuted, fontSize: 16, fontWeight: "900", marginTop: -2 },
+  reactionOverlay: { position: "absolute", top: -500, left: -500, right: -500, bottom: -500, zIndex: 5 },
+  reactionPicker: { position: "absolute", bottom: 36, left: 0, flexDirection: "row", gap: 4, backgroundColor: THEME.ui3, borderRadius: 16, padding: 8, borderWidth: 1, borderColor: THEME.border, zIndex: 10, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 8 },
+  reactionPickerBtn: { padding: 4 },
+  reactionPickerEmoji: { fontSize: 22 },
+  
+  // Action bar
+  actionBar: { flexDirection: "row", alignItems: "center", gap: 4, paddingTop: 12, borderTopWidth: 1, borderTopColor: THEME.border },
+  actionBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 6, borderRadius: 10 },
+  actionTxt: { color: THEME.textMuted, fontSize: 13, fontWeight: "700" },
+  
+  // FIX 1: Comments section styles
+  commentSection: { marginTop: 12, borderTopWidth: 1, borderTopColor: THEME.border, paddingTop: 12 },
+  quickComment: { flexDirection: "row", gap: 10, alignItems: "flex-end", marginBottom: 12 },
+  quickCommentAvatar: { width: 30, height: 30, borderRadius: 10 },
+  quickCommentAvatarFallback: { backgroundColor: THEME.purple, justifyContent: "center", alignItems: "center" },
+  quickCommentInput: { flex: 1, flexDirection: "row", alignItems: "flex-end", backgroundColor: THEME.ui2, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 8, gap: 8, borderWidth: 1, borderColor: THEME.border },
+  quickCommentTxt: { flex: 1, color: THEME.text, fontSize: 13, maxHeight: 80 },
+  noCommentsTxt: { color: THEME.textMuted, fontSize: 12, textAlign: "center", paddingVertical: 12 },
+  commentCard: { flexDirection: "row", gap: 8, marginBottom: 10 },
+  commentCardAvatar: { width: 28, height: 28, borderRadius: 9 },
+  commentAvatarFallback: { backgroundColor: THEME.purple, justifyContent: "center", alignItems: "center" },
+  commentCardBody: { flex: 1, backgroundColor: THEME.ui2, borderRadius: 12, padding: 10 },
+  commentCardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
+  commentCardName: { color: THEME.text, fontWeight: "800", fontSize: 12 },
+  commentCardTime: { color: THEME.textMuted, fontSize: 10 },
+  commentCardTxt: { color: THEME.text, fontSize: 13, lineHeight: 18 },
+  
+  // Admin card
+  adminCard: { borderRadius: 24, padding: 20, marginBottom: 16, borderWidth: 1, borderColor: THEME.purple + "50" },
+  adminCardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
+  adminBadge: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accentDim, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
+  adminBadgeTxt: { color: THEME.accent, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  adminTitle: { color: THEME.text, fontSize: 18, fontWeight: "900", marginBottom: 8 },
+  adminContent: { color: "#B0A8C0", fontSize: 14, lineHeight: 22 },
+  
+  // FIX 7: Ad card
+  adCard: { backgroundColor: THEME.ui, borderRadius: 20, overflow: "hidden", marginBottom: 16, borderWidth: 1, borderColor: THEME.border },
+  adLabel: { flexDirection: "row", alignItems: "center", gap: 4, padding: 10, paddingBottom: 0 },
+  adLabelTxt: { color: THEME.textMuted, fontSize: 10, fontWeight: "600" },
+  adImage: { width: "100%", height: 160 },
+  adBody: { padding: 14 },
+  adTitle: { color: THEME.text, fontWeight: "800", fontSize: 15, marginBottom: 4 },
+  adContent: { color: THEME.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 12 },
+  adCTA: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accent, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, alignSelf: "flex-start" },
+  adCTATxt: { color: "#000", fontWeight: "900", fontSize: 12 },
+  
+  // Loading & empty states
+  loadMoreIndicator: { paddingVertical: 20, alignItems: "center" },
+  emptyState: { paddingVertical: 80, alignItems: "center" },
+  emptyTitle: { color: THEME.text, fontSize: 18, fontWeight: "800", marginTop: 16 },
+  emptySub: { color: THEME.textMuted, fontSize: 13, marginTop: 8, textAlign: "center", lineHeight: 20 },
+  
+  // Comments modal
+  commentModal: { flex: 1, backgroundColor: THEME.bg },
+  commentHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, paddingTop: 60, borderBottomWidth: 1, borderBottomColor: THEME.border },
+  commentTitle: { color: THEME.text, fontSize: 22, fontWeight: "900" },
+  commentCloseBtn: { width: 36, height: 36, borderRadius: 12, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center" },
+  emptyComments: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12 },
+  emptyCommentsTxt: { color: THEME.textMuted, fontSize: 16, fontWeight: "600" },
+  commentItem: { flexDirection: "row", gap: 10, marginBottom: 12 },
+  commentAvatar: { width: 36, height: 36, borderRadius: 12 },
+  commentContent: { flex: 1, gap: 4 },
+  commentBubble: { backgroundColor: THEME.ui2, borderRadius: 14, padding: 12 },
+  commentName: { color: THEME.text, fontWeight: "800", fontSize: 13 },
+  commentText: { color: THEME.text, fontSize: 13, lineHeight: 18 },
+  commentTime: { color: THEME.textMuted, fontSize: 11, marginLeft: 8 },
+  commentInputBar: { flexDirection: "row", gap: 10, alignItems: "flex-end", padding: 16, borderTopWidth: 1, borderTopColor: THEME.border },
+  commentInputAvatar: { width: 32, height: 32, borderRadius: 11 },
+  commentInputWrap: { flex: 1, flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui2, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 8, gap: 8, borderWidth: 1, borderColor: THEME.border },
+  commentInput: { flex: 1, color: THEME.text, fontSize: 13, maxHeight: 80 },
+  
+  // Notifications modal
+  notifModal: { flex: 1, backgroundColor: THEME.bg },
+  notifHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, paddingTop: 60, borderBottomWidth: 1, borderBottomColor: THEME.border },
+  notifTitle: { color: THEME.text, fontSize: 22, fontWeight: "900" },
+  notifCloseBtn: { width: 36, height: 36, borderRadius: 12, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center" },
+  notifLoader: { flex: 1, justifyContent: "center", alignItems: "center" },
+  notifEmpty: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12 },
+  notifEmptyTxt: { color: THEME.textMuted, fontSize: 16, fontWeight: "600" },
+  notifEmptySub: { color: THEME.textMuted, fontSize: 13, textAlign: "center", paddingHorizontal: 40 },
+  notifItem: { flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderBottomWidth: 1, borderBottomColor: THEME.border },
+  notifItemUnread: { backgroundColor: THEME.accentDim },
+  notifIconCircle: { width: 40, height: 40, borderRadius: 13, justifyContent: "center", alignItems: "center" },
+  notifContent: { flex: 1 },
+  notifItemTxt: { color: THEME.text, fontSize: 13, lineHeight: 18 },
+  notifItemTime: { color: THEME.textMuted, fontSize: 11, marginTop: 3 },
+  unreadDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: THEME.accent },
 });
