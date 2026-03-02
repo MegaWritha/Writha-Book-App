@@ -281,7 +281,7 @@ export default function LibraryScreen() {
       />
 
       {/* HEADER */}
-      <View style={styles.headerBtns}>
+      <View style={[styles.headerBtns, { paddingTop: insets.top + 12 }]}>
   <TouchableOpacity
     style={styles.publishBtn}
     onPress={() => router.push("/publish" as any)}
@@ -560,7 +560,7 @@ const styles = StyleSheet.create({
   headerTitle: { color: THEME.text, fontSize: 28, fontWeight: "900", marginTop: 4 },
   writeBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accent, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 14 },
   writeBtnTxt: { color: "#000", fontWeight: "900", fontSize: 13 },
-  headerBtns:     { flexDirection: "row", gap: 8, alignItems: "center" },
+  headerBtns:     { flexDirection: "row", gap: 8, alignItems: "center", paddingHorizontal: 20, paddingBottom: 12 },
   publishBtn:     { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accentDim, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, borderWidth: 1, borderColor: THEME.accent + "40" },
   publishBtnTxt:  { color: THEME.accent, fontWeight: "900", fontSize: 13 },
 

@@ -131,9 +131,13 @@ export default function CreateArticleScreen() {
       input.onchange = (e: any) => {
         const file = e.target.files[0];
         if (!file) return;
-        const url = URL.createObjectURL(file);
-        setCoverImageUri(url);
-        setCoverImage(url);
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const dataurl = ev.target?.result as string;
+          setCoverImageUri(dataurl);
+          setCoverImage(dataurl);
+        };
+        reader.readAsDataURL(file);
       };
       input.click();
       return;

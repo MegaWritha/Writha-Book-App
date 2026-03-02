@@ -162,29 +162,33 @@ export default function CreateResearch() {
 
   // ── IMAGE PICKER ──────────────────────────────────────────────────
   const pickCover = async () => {
-    if (Platform.OS === "web") {
-      const input    = document.createElement("input");
-      input.type     = "file";
-      input.accept   = "image/*";
-      input.onchange = (e: any) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        const url = URL.createObjectURL(file);
-        setResCoverUri(url);
+  if (Platform.OS === "web") {
+    const input    = document.createElement("input");
+    input.type     = "file";
+    input.accept   = "image/*";
+    input.onchange = (e: any) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result as string;
+        setResCoverUri(dataUrl);  // ← correct variable for this file
       };
-      input.click();
-      return;
-    }
-    const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!granted) { webAlert("Permission Required", "Allow access to your photo library."); return; }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true, aspect: [16, 9], quality: 0.8,
-    });
-    if (!result.canceled && result.assets[0]) {
-      setResCoverUri(result.assets[0].uri);
-    }
-  };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+    return;
+  }
+  const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!granted) { webAlert("Permission Required", "Allow access to your photo library."); return; }
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    allowsEditing: true, aspect: [16, 9], quality: 0.8,
+  });
+  if (!result.canceled && result.assets[0]) {
+    setResCoverUri(result.assets[0].uri);
+  }
+};
 
   // ── PDF PICKER ────────────────────────────────────────────────────
   const pickPdf = async () => {
