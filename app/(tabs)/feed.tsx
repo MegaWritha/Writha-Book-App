@@ -14,6 +14,7 @@ import {
   getDocs, doc, updateDoc, arrayUnion, arrayRemove, getDoc,
   deleteDoc, addDoc, serverTimestamp, where, increment,
 } from "firebase/firestore";
+import CommentsModal from "@/components/CommentsModal";
 
 const { width } = Dimensions.get("window");
 const PAGE_SIZE = 15;
@@ -230,134 +231,6 @@ const ReactionStrip = memo(({ postId, uid, reactions }: {
   );
 });
 
-// ── COMMENT LIST ──────────────────────────────────────────────────────────
-// FIX 1: New component to display comments with real-time updates
-const CommentsModal = memo(({ visible, onClose, postId, uid, userPhoto, postAuthorId, onCommentAdded }: {
-  visible: boolean; onClose: () => void; postId: string; uid: string; 
-  userPhoto: string; postAuthorId: string; onCommentAdded?: () => void;
-}) => {
-  const [comments, setComments] = useState<any[]>([]);
-  const [text, setText] = useState("");
-  const [posting, setPosting] = useState(false);
-
-  useEffect(() => {
-    if (!visible || !postId) return;
-    const q = query(collection(db, "feed", postId, "comments"), orderBy("createdAt", "desc"));
-    const unsub = onSnapshot(q, (snap) => {
-      setComments(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
-    return () => unsub();
-  }, [visible, postId]);
-
-  const submit = async () => {
-    if (!text.trim() || !uid) return;
-    setPosting(true);
-    try {
-      const user = auth.currentUser;
-      await addDoc(collection(db, "feed", postId, "comments"), {
-        content: text.trim(),
-        userId: uid,
-        userName: user?.displayName || "Scholar",
-        userPhoto: user?.photoURL || "",
-        createdAt: serverTimestamp(),
-      });
-      
-      await updateDoc(doc(db, "feed", postId), { commentsCount: increment(1) });
-      onCommentAdded?.();
-      
-      // Notification for comment
-      if (postAuthorId && postAuthorId !== uid) {
-        await addDoc(collection(db, "users", postAuthorId, "notifications"), {
-          type: "comment",
-          message: `${user?.displayName || "Someone"} commented on your post`,
-          postId: postId,
-          fromUserId: uid,
-          fromUserName: user?.displayName || "Scholar",
-          fromUserPhoto: user?.photoURL || "",
-          read: false,
-          createdAt: serverTimestamp(),
-        });
-        await updateDoc(doc(db, "users", postAuthorId), { hasUnread: true });
-      }
-      
-      setText("");
-    } catch (e) { console.error(e); } 
-    finally { setPosting(false); }
-  };
-
-  return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet">
-      <SafeAreaView style={styles.commentModal}>
-        <View style={styles.commentHeader}>
-          <Text style={styles.commentTitle}>Comments ({comments.length})</Text>
-          <TouchableOpacity onPress={onClose} style={styles.commentCloseBtn}>
-            <Ionicons name="close" size={22} color={THEME.text} />
-          </TouchableOpacity>
-        </View>
-
-        <FlatList
-          data={comments}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={{ padding: 16 }}
-          ListEmptyComponent={
-            <View style={styles.emptyComments}>
-              <Ionicons name="chatbubbles-outline" size={48} color={THEME.textMuted} />
-              <Text style={styles.emptyCommentsTxt}>No comments yet</Text>
-            </View>
-          }
-          renderItem={({ item }) => (
-            <View style={styles.commentItem}>
-              {item.userPhoto ? (
-                <Image source={{ uri: item.userPhoto }} style={styles.commentAvatar} />
-              ) : (
-                <View style={[styles.commentAvatar, styles.commentAvatarFallback]}>
-                  <Text style={{ color: THEME.accent, fontWeight: "900", fontSize: 12 }}>
-                    {(item.userName || "W")[0].toUpperCase()}
-                  </Text>
-                </View>
-              )}
-              <View style={styles.commentContent}>
-                <View style={styles.commentBubble}>
-                  <Text style={styles.commentName}>{item.userName || "Scholar"}</Text>
-                  <Text style={styles.commentText}>{item.content}</Text>
-                </View>
-                <Text style={styles.commentTime}>{formatTime(item.createdAt)}</Text>
-              </View>
-            </View>
-          )}
-        />
-
-        <View style={styles.commentInputBar}>
-          {userPhoto ? (
-            <Image source={{ uri: userPhoto }} style={styles.commentInputAvatar} />
-          ) : (
-            <View style={[styles.commentInputAvatar, styles.commentAvatarFallback]}>
-              <Text style={{ color: THEME.accent, fontWeight: "900" }}>W</Text>
-            </View>
-          )}
-          <View style={styles.commentInputWrap}>
-            <TextInput
-              style={styles.commentInput}
-              placeholder="Write a comment..."
-              placeholderTextColor={THEME.textMuted}
-              value={text}
-              onChangeText={setText}
-              multiline
-            />
-            <TouchableOpacity onPress={submit} disabled={!text.trim() || posting}>
-              {posting ? (
-                <ActivityIndicator size="small" color={THEME.accent} />
-              ) : (
-                <Ionicons name="send" size={20} color={text.trim() ? THEME.accent : THEME.textMuted} />
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </SafeAreaView>
-    </Modal>
-  );
-});
-
 // ── NOTIFICATIONS MODAL ───────────────────────────────────────────────────
 const NotificationsModal = memo(({ visible, onClose, uid }: {
   visible: boolean; onClose: () => void; uid: string;
@@ -472,8 +345,6 @@ const PostCard = memo(({ item, uid, userPhoto, userData, toggleLike, onProfilePr
   const [showCommentsModal, setShowCommentsModal] = useState(false);
   const [showComments, setShowComments] = useState(false);
   const [bookmarked, setBookmarked] = useState(false);
-  const [localLikes, setLocalLikes] = useState(item.likesCount || 0);
-  const [localComments, setLocalComments] = useState(item.commentsCount || 0);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(20)).current;
@@ -982,14 +853,18 @@ export default function GlobalFeedTab() {
 
   const injectAds = (items: any[]): any[] => {
     const adPlaceholder = {
-      id: `ad_${Date.now()}`,
+      id: "ad_sponsored_static",
       type: "ad",
       title: "Grow Your Readership on Writha",
-      content: "Reach thousands of active readers. Advertise your book today.",
+      content: "Reach thousands of active readers. Advertise your work today.",
       ctaLabel: "Get Started",
     };
-    if (items.length < 5) return items;
-    return [...items.slice(0, 5), adPlaceholder, ...items.slice(5)];
+    if (items.length === 0) return [adPlaceholder];
+
+    const insertAt = Math.min(3, items.length);
+    return [
+      ...items.slice(0, insertAt), adPlaceholder, ...items.slice(insertAt),
+    ];
   };
 
   const loadMore = async () => {

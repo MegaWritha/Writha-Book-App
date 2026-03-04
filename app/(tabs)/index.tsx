@@ -13,6 +13,8 @@ import {
   arrayUnion, arrayRemove, where,
 } from "firebase/firestore";
 
+import CommentsModal from "@/components/CommentsModal";
+
 const { width } = Dimensions.get("window");
 
 const THEME = {
@@ -29,7 +31,6 @@ const THEME = {
   red: "#EF4444",
 };
 
-// ── SECTION HEADER ──────────────────────────────────────────────────────
 const SectionHeader = ({
   title, subtitle, icon, onSeeAll,
 }: {
@@ -56,7 +57,6 @@ const SectionHeader = ({
   </View>
 );
 
-// ── EMPTY CARD ──────────────────────────────────────────────────────────
 const EmptyCard = ({ emoji, text }: { emoji: string; text: string }) => (
   <View style={styles.emptyCard}>
     <Text style={{ fontSize: 28 }}>{emoji}</Text>
@@ -64,7 +64,6 @@ const EmptyCard = ({ emoji, text }: { emoji: string; text: string }) => (
   </View>
 );
 
-// ── FEED CARD ───────────────────────────────────────────────────────────
 function FeedCard({
   item,
   onLike,
@@ -78,11 +77,23 @@ function FeedCard({
   const isArticle = item.type === "article";
   const isResearch = item.type === "research";
 
+  const [showComments, setShowComments] = useState(false);
+
   const borderColor = isArticle
     ? "#38BDF850"
     : isResearch
     ? THEME.purpleLight + "50"
     : THEME.ui2;
+
+  const navigateToItem = () => {
+    if (item.type === "article") {
+      router.push(`/article/${item.id}` as any);
+    } else if (item.type === "research") {
+      router.push(`/research/${item.originalId || item.id}` as any);
+    } else {
+      router.push(`/discussion/${item.id}` as any);
+    }
+  };
 
   return (
     <View style={[styles.feedCard, { borderColor }]}>
@@ -100,10 +111,7 @@ function FeedCard({
         </Text>
       </View>
 
-      <TouchableOpacity
-        onPress={() => router.push(`/discussion/${item.id}/comments` as any)}
-        activeOpacity={0.85}
-      >
+      <TouchableOpacity onPress={navigateToItem} activeOpacity={0.85}>
         {(isArticle || isResearch) && item.title && (
           <Text style={styles.feedTitle} numberOfLines={2}>{item.title}</Text>
         )}
@@ -140,13 +148,15 @@ function FeedCard({
           />
           <Text style={styles.feedActionTxt}>{item.likesCount || 0}</Text>
         </TouchableOpacity>
+
         <TouchableOpacity
           style={styles.feedActionBtn}
-          onPress={() => router.push(`/discussion/${item.id}/comments` as any)}
+          onPress={() => setShowComments(true)}
         >
           <Ionicons name="chatbubble-outline" size={12} color={THEME.purpleLight} />
           <Text style={styles.feedActionTxt}>{item.commentsCount || 0}</Text>
         </TouchableOpacity>
+
         <TouchableOpacity
           style={styles.feedActionBtn}
           onPress={() => Share.share({ message: `${item.title || item.content} — Writha` })}
@@ -154,11 +164,20 @@ function FeedCard({
           <Ionicons name="share-social-outline" size={12} color={THEME.accent} />
         </TouchableOpacity>
       </View>
+
+      <CommentsModal
+        visible={showComments}
+        onClose={() => setShowComments(false)}
+        postId={item.id}
+        uid={user?.uid || ""}
+        userPhoto={user?.photoURL || ""}
+        postAuthorId={item.userId || item.authorId || ""}
+        collection="feed"
+      />
     </View>
   );
 }
 
-// ── FEED FILTER + HORIZONTAL LIST ───────────────────────────────────────
 function FeedFilterTabs({
   discussions, articles, feedItems, onLike,
 }: {
@@ -232,7 +251,6 @@ function FeedFilterTabs({
   );
 }
 
-// ── MAIN SCREEN ─────────────────────────────────────────────────────────
 export default function HomeScreen() {
   const router = useRouter();
   const user = auth.currentUser;
@@ -270,7 +288,6 @@ export default function HomeScreen() {
     return map;
   }, [books]);
 
-  // ── LISTENERS ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
 
@@ -315,7 +332,6 @@ export default function HomeScreen() {
     };
   }, [user]);
 
-  // ── FAB ────────────────────────────────────────────────────────────
   const toggleFab = () => {
     const toVal = fabOpen ? 0 : 1;
     setFabOpen(!fabOpen);
@@ -331,7 +347,6 @@ export default function HomeScreen() {
     outputRange: ["0deg", "45deg"],
   });
 
-  // ── ACTIONS ────────────────────────────────────────────────────────
   const toggleLike = async (col: string, id: string, likedBy: string[] = []) => {
     if (!user) return;
     const isLiked = likedBy.includes(user.uid);
@@ -369,10 +384,10 @@ export default function HomeScreen() {
     Keyboard.dismiss();
   };
 
-  // ── BOOK CARD ──────────────────────────────────────────────────────
   const BookCard = ({ item }: { item: any }) => {
     const isLiked = item.likedBy?.includes(user?.uid);
     const isPaid = item.price > 0;
+    const [showComments, setShowComments] = useState(false);
 
     return (
       <View style={styles.bookCard}>
@@ -418,7 +433,7 @@ export default function HomeScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.bookActionBtn}
-            onPress={() => router.push(`/book/${item.id}/comments` as any)}
+            onPress={() => setShowComments(true)}
           >
             <Ionicons name="chatbubble-outline" size={14} color={THEME.purpleLight} />
             <Text style={styles.bookActionTxt}>{item.commentsCount || 0}</Text>
@@ -428,7 +443,11 @@ export default function HomeScreen() {
             onPress={() =>
               router.push({
                 pathname: "/weave/create",
-                params: { bookId: item.id, bookTitle: item.title, authorName: item.authorName || item.author || "" },
+                params: {
+                  bookId: item.id,
+                  bookTitle: item.title,
+                  authorName: item.authorName || item.author || "",
+                },
               } as any)
             }
           >
@@ -436,11 +455,20 @@ export default function HomeScreen() {
             <Text style={styles.weaveActionTxt}>Weave</Text>
           </TouchableOpacity>
         </View>
-      </View>
-    );
-  };
 
-  // ── WEAVE CARD ─────────────────────────────────────────────────────
+        <CommentsModal
+        visible={showComments}
+        onClose={() => setShowComments(false)}
+        postId={item.id}
+        uid={user?.uid || ""}
+        userPhoto={user?.photoURL || ""}
+        postAuthorId={item.userId || item.authorId || ""}
+        collection="books"
+      />
+    </View>
+  );
+};
+      
   const WeaveCard = ({ item }: { item: any }) => (
     <TouchableOpacity
       style={styles.weaveCard}
@@ -461,7 +489,6 @@ export default function HomeScreen() {
     </TouchableOpacity>
   );
 
-  // ── GROUP CARD — FIX: routes to /group/${id} ───────────────────────
   const GroupCard = ({ item }: { item: any }) => (
     <TouchableOpacity
       style={styles.groupCard}
@@ -492,7 +519,6 @@ export default function HomeScreen() {
     </TouchableOpacity>
   );
 
-  // ── LOADING ────────────────────────────────────────────────────────
   if (loading) {
     return (
       <View style={styles.loader}>
@@ -504,12 +530,10 @@ export default function HomeScreen() {
     );
   }
 
-  // ── RENDER ─────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
 
-      {/* HEADER */}
       <View style={styles.header}>
         <View>
           <Text style={styles.logoText}>WRITHA</Text>
@@ -537,7 +561,6 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* SEARCH BAR */}
       <View style={styles.searchBar}>
         <Ionicons name="search" size={18} color={THEME.textMuted} />
         <TextInput
@@ -589,9 +612,15 @@ export default function HomeScreen() {
                   return (
                     <TouchableOpacity
                       style={styles.searchResultCard}
-                      onPress={() =>
-                        router.push(`/discussion/${item.id}/comments` as any)
-                      }
+                      onPress={() => {
+                        if (item._type === "article") {
+                          router.push(`/article/${item.id}` as any);
+                        } else if (item._type === "research") {
+                          router.push(`/research/${item.originalId || item.id}` as any);
+                        } else {
+                          router.push(`/discussion/${item.id}` as any);
+                        }
+                      }}
                     >
                       <View style={styles.searchResultTypeBadge}>
                         <Text style={styles.searchResultTypeTxt}>
@@ -609,7 +638,6 @@ export default function HomeScreen() {
           </View>
         ) : (
           <>
-            {/* 1. FEATURED */}
             {books.length > 0 && (
               <View style={styles.section}>
                 <SectionHeader title="Featured Today" icon="star-four-points" />
@@ -627,10 +655,7 @@ export default function HomeScreen() {
                 >
                   <Image
                     source={{
-                      uri:
-                        books[0].coverUrl ||
-                        books[0].cover ||
-                        "https://picsum.photos/400/200",
+                      uri: books[0].coverUrl || books[0].cover || "https://picsum.photos/400/200",
                     }}
                     style={styles.featuredImg}
                     resizeMode="cover"
@@ -658,7 +683,6 @@ export default function HomeScreen() {
               </View>
             )}
 
-            {/* 2. TRENDING BOOKS */}
             <View style={styles.section}>
               <SectionHeader title="Trending Books" icon="fire" onSeeAll={() => {}} />
               {books.length === 0 ? (
@@ -675,7 +699,6 @@ export default function HomeScreen() {
               )}
             </View>
 
-            {/* 3. TRENDING WEAVES */}
             <View style={styles.section}>
               <SectionHeader title="Trending Weaves" icon="feather" onSeeAll={() => {}} />
               {weaves.length === 0 ? (
@@ -692,7 +715,6 @@ export default function HomeScreen() {
               )}
             </View>
 
-            {/* 4. TRENDING */}
             <View style={styles.section}>
               <SectionHeader
                 title="Trending"
@@ -700,10 +722,7 @@ export default function HomeScreen() {
                 onSeeAll={() => router.push("/createDiscussion" as any)}
               />
               {feedItems.length === 0 ? (
-                <EmptyCard
-                  emoji="💬"
-                  text="No posts yet. Start the first discussion!"
-                />
+                <EmptyCard emoji="💬" text="No posts yet. Start the first discussion!" />
               ) : (
                 <FeedFilterTabs
                   discussions={discussions}
@@ -714,7 +733,6 @@ export default function HomeScreen() {
               )}
             </View>
 
-            {/* 5. GENRE SECTIONS */}
             {Object.entries(groupedBooks).map(([genre, genreBooks]) => (
               <View key={genre} style={styles.section}>
                 <SectionHeader title={genre} icon="bookshelf" onSeeAll={() => {}} />
@@ -729,7 +747,6 @@ export default function HomeScreen() {
               </View>
             ))}
 
-            {/* 6. ACTIVE GROUPS */}
             <View style={styles.section}>
               <SectionHeader
                 title="Active Groups"
@@ -753,17 +770,11 @@ export default function HomeScreen() {
         )}
       </ScrollView>
 
-      {/* FAB MENU */}
       {fabOpen && (
         <View style={styles.fabMenu}>
-
-          {/* ARTICLE */}
           <TouchableOpacity
             style={styles.fabMenuItem}
-            onPress={() => {
-              setFabOpen(false);
-              router.push("/createArticle" as any);
-            }}
+            onPress={() => { setFabOpen(false); router.push("/createArticle" as any); }}
           >
             <View style={styles.fabMenuLabel}>
               <Text style={styles.fabMenuLabelTxt}>Write Article</Text>
@@ -774,13 +785,9 @@ export default function HomeScreen() {
             </View>
           </TouchableOpacity>
 
-          {/* RESEARCH — FIX: now goes to /createResearch */}
           <TouchableOpacity
             style={styles.fabMenuItem}
-            onPress={() => {
-              setFabOpen(false);
-              router.push("/createResearch" as any);
-            }}
+            onPress={() => { setFabOpen(false); router.push("/createResearch" as any); }}
           >
             <View style={styles.fabMenuLabel}>
               <Text style={styles.fabMenuLabelTxt}>Full Research</Text>
@@ -791,13 +798,9 @@ export default function HomeScreen() {
             </View>
           </TouchableOpacity>
 
-          {/* DISCUSSION — FIX: now goes to /createDiscussion */}
           <TouchableOpacity
             style={styles.fabMenuItem}
-            onPress={() => {
-              setFabOpen(false);
-              router.push("/createDiscussion" as any);
-            }}
+            onPress={() => { setFabOpen(false); router.push("/createDiscussion" as any); }}
           >
             <View style={styles.fabMenuLabel}>
               <Text style={styles.fabMenuLabelTxt}>Discussion</Text>
@@ -807,11 +810,9 @@ export default function HomeScreen() {
               <Ionicons name="chatbubbles-outline" size={20} color="#000" />
             </View>
           </TouchableOpacity>
-
         </View>
       )}
 
-      {/* FAB BUTTON */}
       <TouchableOpacity style={styles.fab} onPress={toggleFab} activeOpacity={0.85}>
         <Animated.View style={{ transform: [{ rotate: fabRotate }] }}>
           <MaterialCommunityIcons name="pencil-plus" size={28} color="#000" />
@@ -824,89 +825,42 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: THEME.bg },
-  loader: {
-    flex: 1, backgroundColor: THEME.bg,
-    justifyContent: "center", alignItems: "center",
-  },
-  header: {
-    paddingTop: 58, paddingHorizontal: 20, paddingBottom: 16,
-    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
-  },
+  loader: { flex: 1, backgroundColor: THEME.bg, justifyContent: "center", alignItems: "center" },
+  header: { paddingTop: 58, paddingHorizontal: 20, paddingBottom: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   logoText: { color: THEME.accent, fontWeight: "900", letterSpacing: 5, fontSize: 16 },
   tagline: { color: THEME.purpleLight, fontSize: 10, fontStyle: "italic", marginBottom: 4 },
   welcome: { color: THEME.text, fontSize: 22, fontWeight: "800" },
   avatar: { width: 48, height: 48, borderRadius: 15, borderWidth: 2, borderColor: THEME.accent },
   avatarFallback: { backgroundColor: THEME.purple, justifyContent: "center", alignItems: "center" },
   avatarInitial: { color: THEME.accent, fontSize: 20, fontWeight: "900" },
-  onlineDot: {
-    position: "absolute", bottom: -2, right: -2,
-    width: 12, height: 12, borderRadius: 6,
-    backgroundColor: THEME.green, borderWidth: 2, borderColor: THEME.bg,
-  },
-  searchBar: {
-    flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui,
-    marginHorizontal: 16, marginBottom: 8, borderRadius: 16,
-    paddingHorizontal: 14, height: 48, borderWidth: 1, borderColor: THEME.ui2, gap: 10,
-  },
+  onlineDot: { position: "absolute", bottom: -2, right: -2, width: 12, height: 12, borderRadius: 6, backgroundColor: THEME.green, borderWidth: 2, borderColor: THEME.bg },
+  searchBar: { flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui, marginHorizontal: 16, marginBottom: 8, borderRadius: 16, paddingHorizontal: 14, height: 48, borderWidth: 1, borderColor: THEME.ui2, gap: 10 },
   searchInput: { flex: 1, color: THEME.text, fontSize: 14 },
   section: { marginTop: 24 },
-  sectionHeader: {
-    flexDirection: "row", justifyContent: "space-between",
-    alignItems: "center", paddingHorizontal: 16, marginBottom: 14,
-  },
+  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 16, marginBottom: 14 },
   sectionHeaderLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
-  sectionIconCircle: {
-    width: 30, height: 30, borderRadius: 9,
-    backgroundColor: THEME.accentDim, justifyContent: "center", alignItems: "center",
-  },
+  sectionIconCircle: { width: 30, height: 30, borderRadius: 9, backgroundColor: THEME.accentDim, justifyContent: "center", alignItems: "center" },
   sectionTitle: { color: THEME.text, fontSize: 16, fontWeight: "900" },
   sectionSubtitle: { color: THEME.textMuted, fontSize: 11, marginTop: 1 },
   seeAllBtn: { flexDirection: "row", alignItems: "center", gap: 3 },
   seeAllTxt: { color: THEME.purpleLight, fontSize: 12, fontWeight: "700" },
-  emptyCard: {
-    marginHorizontal: 16, backgroundColor: THEME.ui, borderRadius: 18,
-    padding: 24, alignItems: "center", borderWidth: 1, borderColor: THEME.ui2,
-  },
+  emptyCard: { marginHorizontal: 16, backgroundColor: THEME.ui, borderRadius: 18, padding: 24, alignItems: "center", borderWidth: 1, borderColor: THEME.ui2 },
   emptyCardTxt: { color: THEME.textMuted, fontSize: 13, marginTop: 8, textAlign: "center" },
-  featuredBanner: {
-    marginHorizontal: 16, height: 200, borderRadius: 22,
-    overflow: "hidden", borderWidth: 1.5, borderColor: THEME.accent,
-  },
+  featuredBanner: { marginHorizontal: 16, height: 200, borderRadius: 22, overflow: "hidden", borderWidth: 1.5, borderColor: THEME.accent },
   featuredImg: { ...StyleSheet.absoluteFillObject },
-  featuredOverlay: {
-    ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(15,7,26,0.65)",
-    padding: 20, justifyContent: "flex-end",
-  },
-  featuredBadge: {
-    backgroundColor: THEME.accent, paddingHorizontal: 10, paddingVertical: 4,
-    borderRadius: 8, alignSelf: "flex-start", marginBottom: 8,
-  },
+  featuredOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(15,7,26,0.65)", padding: 20, justifyContent: "flex-end" },
+  featuredBadge: { backgroundColor: THEME.accent, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, alignSelf: "flex-start", marginBottom: 8 },
   featuredBadgeTxt: { color: "#000", fontSize: 9, fontWeight: "900" },
   featuredTitle: { color: THEME.text, fontSize: 20, fontWeight: "900", lineHeight: 26 },
   featuredAuthor: { color: THEME.purpleLight, fontSize: 12, marginTop: 4 },
-  featuredPricePill: {
-    flexDirection: "row", alignItems: "center", gap: 5,
-    backgroundColor: THEME.accent, paddingHorizontal: 10, paddingVertical: 5,
-    borderRadius: 10, alignSelf: "flex-start", marginTop: 10,
-  },
+  featuredPricePill: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: THEME.accent, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, alignSelf: "flex-start", marginTop: 10 },
   featuredPriceTxt: { color: "#000", fontSize: 11, fontWeight: "900" },
   bookCard: { width: 140 },
-  bookCoverFrame: {
-    borderRadius: 14, borderWidth: 2, borderColor: THEME.accent,
-    overflow: "hidden", position: "relative",
-  },
+  bookCoverFrame: { borderRadius: 14, borderWidth: 2, borderColor: THEME.accent, overflow: "hidden", position: "relative" },
   bookCover: { width: 140, height: 196 },
-  pricePill: {
-    position: "absolute", top: 8, right: 8,
-    backgroundColor: "rgba(0,0,0,0.75)", paddingHorizontal: 8, paddingVertical: 3,
-    borderRadius: 8, borderWidth: 1, borderColor: THEME.accent,
-  },
+  pricePill: { position: "absolute", top: 8, right: 8, backgroundColor: "rgba(0,0,0,0.75)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1, borderColor: THEME.accent },
   pricePillPaid: { borderColor: THEME.green },
-  previewBadge: {
-    position: "absolute", bottom: 8, left: 8, flexDirection: "row",
-    alignItems: "center", gap: 3, backgroundColor: "rgba(0,0,0,0.7)",
-    paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6,
-  },
+  previewBadge: { position: "absolute", bottom: 8, left: 8, flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: "rgba(0,0,0,0.7)", paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6 },
   previewBadgeTxt: { color: "#fff", fontSize: 8, fontWeight: "900" },
   priceText: { color: THEME.accent, fontSize: 9, fontWeight: "900" },
   bookTitle: { color: THEME.text, fontSize: 12, fontWeight: "800", marginTop: 8 },
@@ -914,120 +868,51 @@ const styles = StyleSheet.create({
   bookActions: { flexDirection: "row", alignItems: "center", marginTop: 8, gap: 8 },
   bookActionBtn: { flexDirection: "row", alignItems: "center", gap: 4 },
   bookActionTxt: { color: THEME.textMuted, fontSize: 10 },
-  weaveActionBtn: {
-    backgroundColor: THEME.accent, paddingHorizontal: 8, paddingVertical: 4,
-    borderRadius: 8, flexDirection: "row", alignItems: "center", gap: 4,
-  },
+  weaveActionBtn: { backgroundColor: THEME.accent, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, flexDirection: "row", alignItems: "center", gap: 4 },
   weaveActionTxt: { color: "#000", fontSize: 10, fontWeight: "900" },
-  weaveCard: {
-    width: 190, backgroundColor: THEME.ui, borderRadius: 18,
-    padding: 16, borderWidth: 1, borderColor: THEME.ui2,
-  },
-  weaveBadge: {
-    backgroundColor: THEME.accentDim, paddingHorizontal: 8, paddingVertical: 3,
-    borderRadius: 6, alignSelf: "flex-start", marginBottom: 10,
-  },
+  weaveCard: { width: 190, backgroundColor: THEME.ui, borderRadius: 18, padding: 16, borderWidth: 1, borderColor: THEME.ui2 },
+  weaveBadge: { backgroundColor: THEME.accentDim, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, alignSelf: "flex-start", marginBottom: 10 },
   weaveBadgeTxt: { color: THEME.accent, fontSize: 8, fontWeight: "900" },
   weaveTitle: { color: THEME.text, fontSize: 14, fontWeight: "800", lineHeight: 20 },
   weaveBook: { color: THEME.textMuted, fontSize: 11, marginTop: 6 },
   weaveFooter: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 12 },
   weaveFooterTxt: { color: THEME.textMuted, fontSize: 11 },
-  feedCard: {
-    width: 200, backgroundColor: THEME.ui, borderRadius: 18,
-    padding: 14, borderWidth: 1, borderColor: THEME.ui2,
-    justifyContent: "space-between",
-  },
-  feedBadge: {
-    backgroundColor: THEME.accentDim, paddingHorizontal: 8, paddingVertical: 3,
-    borderRadius: 6, alignSelf: "flex-start", marginBottom: 8,
-  },
+  feedCard: { width: 200, backgroundColor: THEME.ui, borderRadius: 18, padding: 14, borderWidth: 1, borderColor: THEME.ui2, justifyContent: "space-between" },
+  feedBadge: { backgroundColor: THEME.accentDim, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, alignSelf: "flex-start", marginBottom: 8 },
   feedBadgeTxt: { color: THEME.accent, fontSize: 8, fontWeight: "900" },
-  feedTitle: {
-    color: THEME.text, fontWeight: "900", fontSize: 12,
-    marginBottom: 6, lineHeight: 17,
-  },
+  feedTitle: { color: THEME.text, fontWeight: "900", fontSize: 12, marginBottom: 6, lineHeight: 17 },
   feedContent: { color: THEME.textMuted, fontSize: 12, lineHeight: 18, flex: 1 },
-  feedAuthorRow: {
-    flexDirection: "row", alignItems: "center", gap: 6,
-    marginTop: 10, marginBottom: 8,
-  },
+  feedAuthorRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10, marginBottom: 8 },
   feedAvatar: { width: 20, height: 20, borderRadius: 6 },
-  feedAvatarFallback: {
-    backgroundColor: THEME.purple, justifyContent: "center", alignItems: "center",
-  },
+  feedAvatarFallback: { backgroundColor: THEME.purple, justifyContent: "center", alignItems: "center" },
   feedAuthor: { color: THEME.text, fontSize: 10, fontWeight: "700", flex: 1 },
   feedTime: { color: THEME.textMuted, fontSize: 9 },
-  feedActions: {
-    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
-    paddingTop: 8, borderTopWidth: 1, borderTopColor: THEME.ui2,
-  },
+  feedActions: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingTop: 8, borderTopWidth: 1, borderTopColor: THEME.ui2 },
   feedActionBtn: { flexDirection: "row", alignItems: "center", gap: 4 },
   feedActionTxt: { color: THEME.textMuted, fontSize: 10 },
-  filterRow: {
-    flexDirection: "row", paddingHorizontal: 16,
-    gap: 8, marginBottom: 12, paddingBottom: 2,
-  },
-  filterPill: {
-    paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20,
-    backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.ui2,
-  },
+  filterRow: { flexDirection: "row", paddingHorizontal: 16, gap: 8, marginBottom: 12, paddingBottom: 2 },
+  filterPill: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.ui2 },
   filterPillActive: { backgroundColor: THEME.accent, borderColor: THEME.accent },
   filterPillTxt: { color: THEME.textMuted, fontSize: 11, fontWeight: "700" },
   filterPillTxtActive: { color: "#000" },
   groupCard: { width: 110, alignItems: "center" },
   groupImgFrame: { position: "relative" },
-  groupImg: {
-    width: 80, height: 80, borderRadius: 22,
-    borderWidth: 2, borderColor: THEME.purpleLight,
-  },
-  groupImgFallback: {
-    backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center",
-  },
-  groupPrivacyTag: {
-    position: "absolute", top: -4, right: -4,
-    width: 18, height: 18, borderRadius: 6,
-    justifyContent: "center", alignItems: "center",
-  },
-  groupName: {
-    color: THEME.text, fontSize: 11, fontWeight: "700",
-    textAlign: "center", marginTop: 8,
-  },
+  groupImg: { width: 80, height: 80, borderRadius: 22, borderWidth: 2, borderColor: THEME.purpleLight },
+  groupImgFallback: { backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center" },
+  groupPrivacyTag: { position: "absolute", top: -4, right: -4, width: 18, height: 18, borderRadius: 6, justifyContent: "center", alignItems: "center" },
+  groupName: { color: THEME.text, fontSize: 11, fontWeight: "700", textAlign: "center", marginTop: 8 },
   groupMembers: { color: THEME.textMuted, fontSize: 9, marginTop: 2 },
-  clearSearchBtn: {
-    flexDirection: "row", alignItems: "center", gap: 6,
-    marginHorizontal: 16, marginBottom: 14,
-  },
+  clearSearchBtn: { flexDirection: "row", alignItems: "center", gap: 6, marginHorizontal: 16, marginBottom: 14 },
   clearSearchTxt: { color: THEME.accent, fontWeight: "700", fontSize: 13 },
-  searchResultCard: {
-    width: 170, backgroundColor: THEME.ui, borderRadius: 16,
-    padding: 16, borderWidth: 1, borderColor: THEME.ui2,
-  },
-  searchResultTypeBadge: {
-    backgroundColor: THEME.accentDim, paddingHorizontal: 8, paddingVertical: 3,
-    borderRadius: 6, alignSelf: "flex-start", marginBottom: 8,
-  },
+  searchResultCard: { width: 170, backgroundColor: THEME.ui, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: THEME.ui2 },
+  searchResultTypeBadge: { backgroundColor: THEME.accentDim, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, alignSelf: "flex-start", marginBottom: 8 },
   searchResultTypeTxt: { color: THEME.accent, fontSize: 8, fontWeight: "900" },
   searchResultText: { color: THEME.text, fontSize: 13, fontWeight: "700", lineHeight: 19 },
-  fab: {
-    position: "absolute", bottom: 32, right: 22,
-    backgroundColor: THEME.accent, width: 60, height: 60, borderRadius: 20,
-    justifyContent: "center", alignItems: "center", elevation: 8,
-    shadowColor: THEME.accent, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4, shadowRadius: 8, zIndex: 100,
-  },
-  fabMenu: {
-    position: "absolute", bottom: 104, right: 22,
-    zIndex: 99, alignItems: "flex-end", gap: 12,
-  },
+  fab: { position: "absolute", bottom: 32, right: 22, backgroundColor: THEME.accent, width: 60, height: 60, borderRadius: 20, justifyContent: "center", alignItems: "center", elevation: 8, shadowColor: THEME.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8, zIndex: 100 },
+  fabMenu: { position: "absolute", bottom: 104, right: 22, zIndex: 99, alignItems: "flex-end", gap: 12 },
   fabMenuItem: { flexDirection: "row", alignItems: "center", gap: 10 },
-  fabMenuLabel: {
-    backgroundColor: THEME.ui, paddingHorizontal: 14, paddingVertical: 8,
-    borderRadius: 14, borderWidth: 1, borderColor: THEME.ui2,
-  },
+  fabMenuLabel: { backgroundColor: THEME.ui, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 14, borderWidth: 1, borderColor: THEME.ui2 },
   fabMenuLabelTxt: { color: THEME.text, fontWeight: "800", fontSize: 13 },
   fabMenuLabelSub: { color: THEME.textMuted, fontSize: 10, marginTop: 1 },
-  fabMenuIcon: {
-    width: 44, height: 44, borderRadius: 14,
-    justifyContent: "center", alignItems: "center",
-  },
+  fabMenuIcon: { width: 44, height: 44, borderRadius: 14, justifyContent: "center", alignItems: "center" },
 });

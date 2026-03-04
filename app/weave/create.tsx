@@ -262,18 +262,57 @@ export default function CreateWeave() {
       // 1. Save to weaves collection
       const docRef = await addDoc(collection(db, "weaves"), weaveData);
 
-      // 2. Mirror to global feed if public
-      if (isPublic) {
-        await setDoc(doc(db, "feed", docRef.id), {
-          ...weaveData,
-          type: "weave",
-          weaveType: weaveType,
-          feedType: "weave",
-          isArchived: false,
-          status: "published",
-          originalId: docRef.id,
-        });
-      }
+       // 2. Mirror to global feed if public
+if (isPublic) {
+  try {
+    const feedData = {
+      // Core identity
+      type:         "weave",
+      weaveType:    weaveType,
+      feedType:     "weave",
+      originalId:   docRef.id,
+      status:       "published",
+      isArchived:   false,
+
+      // Book reference
+      bookTitle:    selectedBook!.title,
+      bookAuthor:   selectedBook!.author,
+      isExternalBook: !selectedBook!.isOnPlatform,
+
+      // Content
+      title:        hasField("title") ? title.trim() : "",
+      content:      content.trim(),
+      findings:     hasField("findings") ? findings.trim() : "",
+      rating:       hasField("rating") ? rating.trim() : "",
+      tags:         weaveData.tags,
+
+      // Author
+      userId:       user.uid,
+      userName:     user.displayName || "Writha Scholar",
+      userPhoto:    user.photoURL || "",
+
+      // Counts
+      likesCount:   0,
+      likedBy:      [],
+      commentsCount: 0,
+      reactions:    {},
+
+      // Timestamp
+      createdAt:    serverTimestamp(),
+    };
+
+    await setDoc(doc(db, "feed", docRef.id), feedData);
+    console.log("Feed write successful");
+  } catch (feedError: any) {
+    console.error("Feed write failed:", feedError.message);
+    showAlert(
+      "Feed Error",
+      feedError.message,
+      [{ text: "OK" }]
+    );
+  }
+}
+      
 
       // 3. Increment weave count on user profile
       await updateDoc(doc(db, "users", user.uid), {
