@@ -266,7 +266,12 @@ export default function CreateWeave() {
       if (isPublic) {
         await setDoc(doc(db, "feed", docRef.id), {
           ...weaveData,
+          type: "weave",
+          weaveType: weaveType,
           feedType: "weave",
+          isArchived: false,
+          status: "published",
+          originalId: docRef.id,
         });
       }
 

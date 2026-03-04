@@ -101,7 +101,7 @@ export default function AdminDashboard() {
   ];
 
   const menuItems = [
-    { label: "Book Approvals",   icon: "checkmark-circle", color: THEME.accent,  route: "/admin/approvals",   badge: stats.pendingBooks },
+    { label: "Approvals",   icon: "checkmark-circle", color: THEME.accent,  route: "/admin/approvals",   badge: stats.pendingBooks },
     { label: "User Management",  icon: "people",           color: THEME.blue,    route: "/admin/users" },
     { label: "Reports",          icon: "flag",             color: THEME.red,     route: "/admin/reports",     badge: stats.totalReports },
     { label: "Ads Manager",      icon: "megaphone",        color: THEME.green,   route: "/admin/ads" },
