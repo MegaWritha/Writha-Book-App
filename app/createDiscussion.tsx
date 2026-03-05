@@ -53,6 +53,22 @@ const SettingRow = ({
   </View>
 );
 
+// ── SUCCESS SCREEN ─────────────────────────────────────────────────────
+const SuccessScreen = ({ onDone }: { onDone: () => void }) => (
+  <View style={styles.successContainer}>
+    <View style={styles.successIconCircle}>
+      <Ionicons name="checkmark" size={48} color="#000" />
+    </View>
+    <Text style={styles.successTitle}>Discussion Posted! 🎉</Text>
+    <Text style={styles.successSub}>
+      Your discussion is now live on the Writha community feed.
+    </Text>
+    <TouchableOpacity style={styles.successBtn} onPress={onDone}>
+      <Text style={styles.successBtnTxt}>Back to Feed</Text>
+    </TouchableOpacity>
+  </View>
+);
+
 export default function CreateDiscussion() {
   const router = useRouter();
   const user = auth.currentUser;
@@ -63,6 +79,7 @@ export default function CreateDiscussion() {
   const [publishToWeb, setPublishToWeb] = useState(false);
   const [allowComments, setAllowComments] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [posted, setPosted] = useState(false); // ── NEW
 
   const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
   const WORD_LIMIT = 500;
@@ -70,14 +87,7 @@ export default function CreateDiscussion() {
   const overLimit = wordCount > WORD_LIMIT;
 
   const handleChangeText = (text: string) => {
-    // Count words of new text before setting
-    const words = text.trim() ? text.trim().split(/\s+/) : [];
-    if (words.length <= WORD_LIMIT) {
-      setContent(text);
-    } else {
-      // Allow typing but flag over limit — don't hard cut
-      setContent(text);
-    }
+    setContent(text);
   };
 
   const handlePost = async () => {
@@ -120,15 +130,22 @@ export default function CreateDiscussion() {
         discussionCount: increment(1),
       });
 
-      Alert.alert("Posted! 🎉", "Your discussion is live.", [
-        { text: "Done", onPress: () => router.back() },
-      ]);
+      setPosted(true); // ── SHOW SUCCESS SCREEN instead of Alert
     } catch (e: any) {
       Alert.alert("Error", e.message);
     } finally {
       setLoading(false);
     }
   };
+
+  // ── SHOW SUCCESS SCREEN AFTER POSTING ─────────────────────────────
+  if (posted) {
+    return (
+      <View style={styles.container}>
+        <SuccessScreen onDone={() => router.replace("/(tabs)" as any)} />
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -140,10 +157,10 @@ export default function CreateDiscussion() {
             if (content) {
               Alert.alert("Discard?", "You have unsaved content.", [
                 { text: "Keep Editing", style: "cancel" },
-                { text: "Discard", style: "destructive", onPress: () => router.back() },
+                { text: "Discard", style: "destructive", onPress: () => router.replace("/(tabs)" as any) },
               ]);
             } else {
-              router.back();
+              router.replace("/(tabs)" as any);
             }
           }}
         >
@@ -224,7 +241,6 @@ export default function CreateDiscussion() {
               autoFocus
             />
             <View style={styles.discInputFooter}>
-              {/* Word counter */}
               <View style={styles.wordCountWrap}>
                 <Text style={[
                   styles.wordCountTxt,
@@ -242,7 +258,6 @@ export default function CreateDiscussion() {
                   {wordCount} / {WORD_LIMIT}
                 </Text>
               </View>
-              {/* Visual word bar */}
               <View style={styles.wordBar}>
                 <View style={[
                   styles.wordBarFill,
@@ -374,9 +389,7 @@ const styles = StyleSheet.create({
   wordCountWrap: { flexDirection: "row", justifyContent: "space-between" },
   wordCountTxt: { color: THEME.textMuted, fontSize: 11 },
   wordCountNum: { color: THEME.textMuted, fontSize: 11, fontWeight: "700" },
-  wordBar: {
-    height: 3, backgroundColor: THEME.ui2, borderRadius: 2, overflow: "hidden",
-  },
+  wordBar: { height: 3, backgroundColor: THEME.ui2, borderRadius: 2, overflow: "hidden" },
   wordBarFill: { height: "100%", borderRadius: 2 },
   settingRow: {
     flexDirection: "row", alignItems: "center", backgroundColor: THEME.ui,
@@ -408,4 +421,22 @@ const styles = StyleSheet.create({
   },
   guidelinesTitle: { color: THEME.text, fontWeight: "900", fontSize: 13, marginBottom: 10 },
   guidelinesTxt: { color: THEME.textMuted, fontSize: 12, lineHeight: 22 },
+
+  // ── SUCCESS SCREEN STYLES ──────────────────────────────────────────
+  successContainer: {
+    flex: 1, justifyContent: "center", alignItems: "center",
+    padding: 40, gap: 20,
+  },
+  successIconCircle: {
+    width: 100, height: 100, borderRadius: 30,
+    backgroundColor: THEME.accent, justifyContent: "center", alignItems: "center",
+    marginBottom: 8,
+  },
+  successTitle: { color: THEME.text, fontSize: 26, fontWeight: "900", textAlign: "center" },
+  successSub: { color: THEME.textMuted, fontSize: 14, textAlign: "center", lineHeight: 22 },
+  successBtn: {
+    backgroundColor: THEME.accent, paddingHorizontal: 40,
+    paddingVertical: 16, borderRadius: 18, marginTop: 16,
+  },
+  successBtnTxt: { color: "#000", fontWeight: "900", fontSize: 15 },
 });
