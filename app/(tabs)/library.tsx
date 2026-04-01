@@ -239,7 +239,7 @@ export default function LibraryScreen() {
       return;
     }
     if (item.status === "draft") {
-      router.push({ pathname: "/write/[id]", params: { id: item.id } } as any);
+      router.replace({ pathname: "/write/[id]", params: { id: item.id } } as any);
     } else {
       router.push({ pathname: "/book/[id]", params: { id: item.bookId || item.id } } as any);
     }
