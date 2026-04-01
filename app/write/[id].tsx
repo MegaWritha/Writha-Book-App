@@ -89,31 +89,59 @@ export default function WrithaEditor() {
     }
   }, [id]);
 
-  // ── AUTOSAVE every 20 seconds when title exists ───────────────────────
-  useEffect(() => {
-    if (!form.title.trim() || !user || initialSync) return;
-    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+  // ── FIXED AUTOSAVE (WORKING) ─────────────────────────────────────────
+useEffect(() => {
+  if (!form.title.trim() || !user || initialSync) return;
 
-    autoSaveTimer.current = setTimeout(async () => {
-      try {
-        const docId = (id && id !== "new")
-          ? id as string
-          : `draft_${user.uid}_${Date.now()}`;
+  if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+
+  autoSaveTimer.current = setTimeout(async () => {
+    try {
+      let docId = id as string;
+
+      // 🔥 CREATE NEW DRAFT ONLY ONCE
+      if (!id || id === "new") {
+        docId = `draft_${user.uid}_${Date.now()}`;
+
         await setDoc(
           doc(db, "books", docId),
-          { ...form, authorId: user.uid, updatedAt: serverTimestamp() },
+          {
+            ...form,
+            authorId: user.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
           { merge: true }
         );
-        setLastSaved(new Date());
-      } catch (e) {
-        console.error("Autosave failed:", e);
-      }
-    }, 20000);
 
-    return () => {
-      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-    };
-  }, [form.title, form.content, form.description, initialSync]);
+        router.replace(`/write/${docId}`);
+
+        setLastSaved(new Date());
+        return;
+      }
+
+      // UPDATE EXISTING DRAFT
+      await setDoc(
+        doc(db, "books", docId),
+        {
+          ...form,
+          authorId: user.uid,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      setLastSaved(new Date());
+
+    } catch (e) {
+      console.error("Autosave failed:", e);
+    }
+  }, 20000);
+
+  return () => {
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+  };
+}, [form, id, initialSync]);
 
   // ── COVER IMAGE PICKER ────────────────────────────────────────────────
   const pickCover = async () => {

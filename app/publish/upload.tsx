@@ -374,6 +374,7 @@ export default function UploadManuscript() {
 
       setReport(manuscriptReport);
       setStage("done");
+      saveDraft(manuscriptReport);
 
     } catch (e: any) {
       setStage("error");
@@ -396,6 +397,37 @@ export default function UploadManuscript() {
       console.error("Storage upload failed:", e);
     }
   };
+
+  const saveDraft = async (manuscriptReport: ManuscriptReport) => {
+  if (!user) return;
+  try {
+    const draftId = `draft_${user.uid}_${Date.now()}`;
+    await setDoc(doc(db, "books", draftId), {
+      id: draftId,
+      authorId: user.uid,
+      title: manuscriptReport.fileName.replace(/\.[^/.]+$/, ""),
+      status: "draft",
+      wordCount: manuscriptReport.wordCount,
+      chapterCount: manuscriptReport.chapterCount,
+      pageCount: manuscriptReport.pageCount,
+      readingTime: manuscriptReport.readingTime,
+      fileType: manuscriptReport.fileType,
+      fileName: manuscriptReport.fileName,
+      fileSize: manuscriptReport.fileSize,
+      content: manuscriptReport.content,
+      isbn: isbn,
+      cover: "",
+      coverUrl: "",
+      views: 0,
+      likesCount: 0,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    console.log("Draft saved to books collection");
+  } catch (e) {
+    console.error("Failed to save draft:", e);
+  }
+};
 
   // ── PROCEED TO DETAILS ───────────────────────────────────────────
   const proceedToDetails = () => {
