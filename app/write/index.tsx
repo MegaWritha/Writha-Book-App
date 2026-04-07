@@ -4,7 +4,7 @@ import {
   ScrollView, Switch, KeyboardAvoidingView, Platform,
   ActivityIndicator, StatusBar, Image, Dimensions, Alert,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import { auth, db } from "@/lib/firebase";
 import { doc, setDoc, getDoc, serverTimestamp } from "firebase/firestore";
 import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from "@expo/vector-icons";
@@ -80,6 +80,7 @@ type Tab = typeof TABS[number];
 
 export default function WriteStudio() {
   const router  = useRouter();
+  const { id } = useLocalSearchParams();
   const insets  = useSafeAreaInsets();
   const user    = auth.currentUser;
 
@@ -138,6 +139,36 @@ export default function WriteStudio() {
       })
       .catch(() => {});
   }, [user]);
+
+  useEffect(() => {
+  if (!id || !user) return;
+
+  const loadDraft = async () => {
+    try {
+      const snap = await getDoc(doc(db, "books", id as string));
+
+      if (snap.exists()) {
+        const data = snap.data();
+
+        setTitle(data.title || "");
+        setSubtitle(data.subtitle || "");
+        setFullContent(data.content || "");
+        setDescription(data.description || "");
+        setGenre(data.genre || "");
+        setCoverUrl(data.coverUrl || "");
+        setAuthorName(data.authorName || "");
+        setTags(data.tags || []);
+        setIsMature(data.isMature || false);
+
+        draftIdRef.current = id as string;
+      }
+    } catch (e) {
+      console.log("Error loading draft:", e);
+    }
+  };
+
+  loadDraft();
+}, [id]);
 
   // ── COMPUTED ─────────────────────────────────────────────────────
   const finalCover = coverLocalUri || coverUrl;
@@ -198,6 +229,7 @@ export default function WriteStudio() {
           { ...buildBookData("draft"), createdAt: serverTimestamp() },
           { merge: true }
         );
+        router.replace(`/write?id=${docId}` );
         setLastSaved(new Date());
       } catch (e) { console.error("Autosave failed:", e); }
     }, 30000);
