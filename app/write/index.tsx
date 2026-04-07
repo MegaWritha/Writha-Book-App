@@ -217,13 +217,16 @@ export default function WriteStudio() {
 
   // ── AUTOSAVE ─────────────────────────────────────────────────────
   useEffect(() => {
-    if (!title.trim() || !user) return;
+    if  (!user) return;
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
 
     autoSaveTimer.current = setTimeout(async () => {
       try {
-        const docId = draftIdRef.current || `draft_${user.uid}_${Date.now()}`;
-        draftIdRef.current = docId;
+        if (!draftIdRef.current) {                                           
+          draftIdRef.current = id as string || doc(db, "books").id;
+        }
+        const docId = draftIdRef.current;
+        
         await setDoc(
           doc(db, "books", docId),
           { ...buildBookData("draft"), createdAt: serverTimestamp() },
@@ -232,7 +235,7 @@ export default function WriteStudio() {
         router.replace(`/write?id=${docId}` );
         setLastSaved(new Date());
       } catch (e) { console.error("Autosave failed:", e); }
-    }, 30000);
+    }, 15000);
 
     return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current); };
   }, [title, subtitle, fullContent, chapters, description, genre, coverUrl, coverLocalUri, authorName]);
