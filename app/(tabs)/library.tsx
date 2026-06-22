@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
   Image, Dimensions, ActivityIndicator, Animated,
-  RefreshControl,
+  RefreshControl, Alert, Modal,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -10,6 +10,7 @@ import { router } from "expo-router";
 import { auth, db } from "@/lib/firebase";
 import {
   collection, query, where, onSnapshot, orderBy, doc, getDoc,
+  setDoc, serverTimestamp,
 } from "firebase/firestore";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -63,16 +64,14 @@ const TABS: { id: TabType; icon: string; label: string }[] = [
   { id: "stats",       icon: "chart-box-outline",          label: "Stats"      },
 ];
 
-// ── STATUS CONFIG ─────────────────────────────────────────────────────────
 const STATUS_CONFIG: Record<string, { color: string; label: string }> = {
-  draft:        { color: THEME.textMuted,   label: "DRAFT"         },
-  submitted:    { color: THEME.accent,      label: "IN REVIEW"     },
-  under_review: { color: THEME.purple,      label: "REVIEWING"     },
-  rejected:     { color: THEME.red,         label: "NEEDS CHANGES" },
-  published:    { color: THEME.green,       label: "LIVE"          },
+  draft:        { color: THEME.textMuted, label: "DRAFT"         },
+  submitted:    { color: THEME.accent,    label: "IN REVIEW"     },
+  under_review: { color: THEME.purple,    label: "REVIEWING"     },
+  rejected:     { color: THEME.red,       label: "NEEDS CHANGES" },
+  published:    { color: THEME.green,     label: "LIVE"          },
 };
 
-// ── STAT BOX ──────────────────────────────────────────────────────────────
 const StatBox = ({ label, val, color, icon }: any) => (
   <View style={styles.statTile}>
     <View style={[styles.statTileIcon, { backgroundColor: color + "20" }]}>
@@ -83,7 +82,6 @@ const StatBox = ({ label, val, color, icon }: any) => (
   </View>
 );
 
-// ── BOOK CARD ─────────────────────────────────────────────────────────────
 const BookCard = ({
   item, tab, onPress,
 }: {
@@ -113,8 +111,6 @@ const BookCard = ({
             }}
             style={styles.coverImg}
           />
-
-          {/* Progress bar for reading tab */}
           {tab === "reading" && (
             <>
               <View style={styles.progressTrack}>
@@ -125,22 +121,16 @@ const BookCard = ({
               </View>
             </>
           )}
-
-          {/* Offline badge */}
           {item.isOffline && (
             <View style={styles.offlineBadge}>
               <Ionicons name="cloud-done" size={12} color={THEME.green} />
             </View>
           )}
-
-          {/* Status badge */}
           {statusCfg && tab !== "reading" && tab !== "purchased" && (
             <View style={[styles.statusBadge, { backgroundColor: statusCfg.color + "DD" }]}>
               <Text style={styles.statusBadgeTxt}>{statusCfg.label}</Text>
             </View>
           )}
-
-          {/* Price badge for purchased */}
           {tab === "purchased" && item.price && (
             <View style={styles.purchasedBadge}>
               <Ionicons name="checkmark-circle" size={12} color={THEME.green} />
@@ -148,7 +138,6 @@ const BookCard = ({
             </View>
           )}
         </View>
-
         <Text style={styles.bookTitle} numberOfLines={1}>
           {item.title || "Untitled"}
         </Text>
@@ -173,15 +162,15 @@ export default function LibraryScreen() {
   const [myWorks, setMyWorks] = useState<BookItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [showWriteModal, setShowWriteModal] = useState(false);
+  const [creatingDraft, setCreatingDraft] = useState(false);
   const scrollX = useRef(new Animated.Value(0)).current;
 
   const user = auth.currentUser;
 
-  // ── LISTENERS ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
 
-    // ✅ FIX: Reading list — tracks books with progress > 0
     const unsubRead = onSnapshot(
       query(
         collection(db, "users", user.uid, "library"),
@@ -189,8 +178,6 @@ export default function LibraryScreen() {
       ),
       async (snap) => {
         const items = snap.docs.map((d) => ({ id: d.id, ...d.data() } as BookItem));
-
-        // ✅ Fetch full book details for each library entry
         const enriched = await Promise.allSettled(
           items.map(async (item) => {
             try {
@@ -202,23 +189,16 @@ export default function LibraryScreen() {
             } catch { return item; }
           })
         );
-
         const all = enriched
           .filter((r) => r.status === "fulfilled")
           .map((r) => (r as any).value as BookItem);
-
-        // Reading = has progress
         setReadingList(all.filter((b) => (b.progress || 0) > 0));
-
-        // Purchased = paid books (price > 0)
         setPurchasedList(all.filter((b) => b.price && b.price > 0));
-
         setLoading(false);
       },
       () => setLoading(false)
     );
 
-    // My authored works
     const unsubWorks = onSnapshot(
       query(collection(db, "books"), where("authorId", "==", user.uid)),
       (snap) => {
@@ -235,13 +215,34 @@ export default function LibraryScreen() {
   };
 
   const handleBookPress = (item: BookItem) => {
-    if (item.status === "submitted" || item.status === "under_review") {
-      return;
-    }
+    if (item.status === "submitted" || item.status === "under_review") return;
     if (item.status === "draft") {
       router.replace({ pathname: "/write/[id]", params: { id: item.id } } as any);
     } else {
       router.push({ pathname: "/book/[id]", params: { id: item.bookId || item.id } } as any);
+    }
+  };
+
+  const handleStartFresh = async () => {
+    if (!user) return;
+    setCreatingDraft(true);
+    try {
+      const newId = `draft_${user.uid}_${Date.now()}`;
+      await setDoc(doc(db, "books", newId), {
+        title: "",
+        authorId: user.uid,
+        status: "draft",
+        mode: "write",
+        content: "",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      setShowWriteModal(false);
+      router.push({ pathname: "/write/[id]", params: { id: newId } } as any);
+    } catch {
+      Alert.alert("Error", "Could not create a new draft. Please try again.");
+    } finally {
+      setCreatingDraft(false);
     }
   };
 
@@ -260,8 +261,8 @@ export default function LibraryScreen() {
     }
   };
 
-  const totalReads  = myWorks.reduce((a, b) => a + (b.views || 0), 0);
-  const totalLikes  = myWorks.reduce((a, b) => a + (b.likesCount || 0), 0);
+  const totalReads = myWorks.reduce((a, b) => a + (b.views || 0), 0);
+  const totalLikes = myWorks.reduce((a, b) => a + (b.likesCount || 0), 0);
 
   if (loading) {
     return (
@@ -272,32 +273,28 @@ export default function LibraryScreen() {
     );
   }
 
-  // ── RENDER ────────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
-      <LinearGradient
-        colors={["#0D0818", "#0A0612"]}
-        style={StyleSheet.absoluteFill}
-      />
+      <LinearGradient colors={["#0D0818", "#0A0612"]} style={StyleSheet.absoluteFill} />
 
       {/* HEADER */}
       <View style={[styles.headerBtns, { paddingTop: insets.top + 12 }]}>
-  <TouchableOpacity
-    style={styles.publishBtn}
-    onPress={() => router.push("/publish" as any)}
-  >
-    <Ionicons name="cloud-upload-outline" size={16} color={THEME.accent} />
-    <Text style={styles.publishBtnTxt}>Publish</Text>
-  </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.publishBtn}
+          onPress={() => router.push("/publish" as any)}
+        >
+          <Ionicons name="cloud-upload-outline" size={16} color={THEME.accent} />
+          <Text style={styles.publishBtnTxt}>Publish</Text>
+        </TouchableOpacity>
 
-  <TouchableOpacity
-    style={styles.writeBtn}
-    onPress={() => router.push("/write" as any)}
-  >
-    <MaterialCommunityIcons name="pencil-plus" size={18} color="#000" />
-    <Text style={styles.writeBtnTxt}>Write</Text>
-  </TouchableOpacity>
-</View>
+        <TouchableOpacity
+          style={styles.writeBtn}
+          onPress={() => setShowWriteModal(true)}
+        >
+          <MaterialCommunityIcons name="pencil-plus" size={18} color="#000" />
+          <Text style={styles.writeBtnTxt}>Write</Text>
+        </TouchableOpacity>
+      </View>
 
       {/* QUICK STATS ROW */}
       <View style={styles.quickStatsRow}>
@@ -333,7 +330,6 @@ export default function LibraryScreen() {
       >
         {TABS.map((tab) => {
           const isActive = activeTab === tab.id;
-          // Badge count
           const badgeCount =
             tab.id === "reading"     ? readingList.length :
             tab.id === "purchased"   ? purchasedList.length :
@@ -375,14 +371,10 @@ export default function LibraryScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={THEME.accent} />
         }
       >
-        {/* STATS TAB */}
         {activeTab === "stats" ? (
           <View style={styles.statsSection}>
             <View style={styles.mainStatCard}>
-              <LinearGradient
-                colors={["#2D1B4D", "#1E1135"]}
-                style={styles.mainStatGradient}
-              >
+              <LinearGradient colors={["#2D1B4D", "#1E1135"]} style={styles.mainStatGradient}>
                 <Text style={styles.mainStatVal}>{totalReads.toLocaleString()}</Text>
                 <Text style={styles.mainStatLabel}>TOTAL PORTFOLIO READS</Text>
                 <View style={styles.mainStatDivider} />
@@ -405,13 +397,12 @@ export default function LibraryScreen() {
 
             <Text style={styles.statsSectionTitle}>BREAKDOWN</Text>
             <View style={styles.statsGrid}>
-              <StatBox label="PUBLISHED"  val={published.length}   color={THEME.green}       icon="checkmark-circle" />
-              <StatBox label="DRAFTS"     val={drafts.length}      color={THEME.textMuted}   icon="document-text"    />
-              <StatBox label="IN QUEUE"   val={submissions.length} color={THEME.accent}      icon="time"             />
+              <StatBox label="PUBLISHED"  val={published.length}     color={THEME.green}     icon="checkmark-circle" />
+              <StatBox label="DRAFTS"     val={drafts.length}        color={THEME.textMuted} icon="document-text"    />
+              <StatBox label="IN QUEUE"   val={submissions.length}   color={THEME.accent}    icon="time"             />
               <StatBox label="PURCHASED"  val={purchasedList.length} color={THEME.blue}      icon="cart"             />
             </View>
 
-            {/* Per-book performance */}
             {published.length > 0 && (
               <>
                 <Text style={styles.statsSectionTitle}>BOOK PERFORMANCE</Text>
@@ -433,7 +424,6 @@ export default function LibraryScreen() {
                           <Text style={styles.perfStatTxt}>{book.likesCount || 0}</Text>
                         </View>
                       </View>
-                      {/* Read ratio bar */}
                       <View style={styles.perfBar}>
                         <View style={[styles.perfBarFill, {
                           width: `${Math.min(100, ((book.views || 0) / Math.max(1, totalReads)) * 100)}%`,
@@ -447,7 +437,6 @@ export default function LibraryScreen() {
           </View>
         ) : (
           <>
-            {/* EMPTY STATES */}
             {getCurrentData().length === 0 ? (
               <View style={styles.emptyState}>
                 <View style={styles.emptyIconCircle}>
@@ -458,11 +447,11 @@ export default function LibraryScreen() {
                   />
                 </View>
                 <Text style={styles.emptyTitle}>
-                  {activeTab === "reading"     ? "No books in progress"     :
-                   activeTab === "purchased"   ? "No purchased books yet"   :
-                   activeTab === "drafts"      ? "No drafts yet"            :
-                   activeTab === "published"   ? "Nothing published yet"    :
-                                                 "No pending submissions"   }
+                  {activeTab === "reading"     ? "No books in progress"   :
+                   activeTab === "purchased"   ? "No purchased books yet" :
+                   activeTab === "drafts"      ? "No drafts yet"          :
+                   activeTab === "published"   ? "Nothing published yet"  :
+                                                 "No pending submissions" }
                 </Text>
                 <Text style={styles.emptySub}>
                   {activeTab === "reading"
@@ -474,7 +463,7 @@ export default function LibraryScreen() {
                 {(activeTab === "drafts" || activeTab === "published") && (
                   <TouchableOpacity
                     style={styles.emptyActionBtn}
-                    onPress={() => router.push("/write" as any)}
+                    onPress={() => setShowWriteModal(true)}
                   >
                     <MaterialCommunityIcons name="pencil-plus" size={16} color="#000" />
                     <Text style={styles.emptyActionBtnTxt}>Open Studio</Text>
@@ -483,7 +472,6 @@ export default function LibraryScreen() {
               </View>
             ) : (
               <>
-                {/* READING — show continue reading banner for most recent */}
                 {activeTab === "reading" && readingList[0] && (
                   <TouchableOpacity
                     style={styles.continueBanner}
@@ -516,7 +504,6 @@ export default function LibraryScreen() {
                   </TouchableOpacity>
                 )}
 
-                {/* SUBMISSIONS — status info box */}
                 {activeTab === "submissions" && (
                   <View style={styles.reviewInfoBox}>
                     <Ionicons name="shield-checkmark-outline" size={16} color={THEME.accent} />
@@ -526,7 +513,17 @@ export default function LibraryScreen() {
                   </View>
                 )}
 
-                {/* BOOK GRID */}
+                {activeTab === "drafts" && (
+                  <TouchableOpacity
+                    style={styles.goToDraftsBtn}
+                    onPress={() => router.push("/drafts" as any)}
+                  >
+                    <MaterialCommunityIcons name="file-document-edit-outline" size={15} color={THEME.accent} />
+                    <Text style={styles.goToDraftsBtnTxt}>Open Drafts Studio</Text>
+                    <Ionicons name="chevron-forward" size={14} color={THEME.accent} />
+                  </TouchableOpacity>
+                )}
+
                 <View style={styles.bookGrid}>
                   {getCurrentData().map((item) => (
                     <BookCard
@@ -541,9 +538,79 @@ export default function LibraryScreen() {
             )}
           </>
         )}
-
         <View style={{ height: 120 }} />
       </ScrollView>
+
+      {/* WRITE MODAL */}
+      <Modal
+        visible={showWriteModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowWriteModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            onPress={() => setShowWriteModal(false)}
+          />
+          <View style={styles.modalCard}>
+            <View style={styles.modalIconWrap}>
+              <MaterialCommunityIcons name="pencil" size={28} color={THEME.accent} />
+            </View>
+            <Text style={styles.modalTitle}>Ready to write?</Text>
+            <Text style={styles.modalSub}>
+              Pick up where you left off or start something new.
+            </Text>
+
+            <TouchableOpacity
+              style={styles.modalOptionA}
+              onPress={() => {
+                setShowWriteModal(false);
+                router.push("/drafts" as any);
+              }}
+            >
+              <View style={styles.modalOptionIcon}>
+                <MaterialCommunityIcons name="file-document-edit-outline" size={20} color={THEME.accent} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modalOptionTitle}>Continue a Draft</Text>
+                <Text style={styles.modalOptionSub}>
+                  {drafts.length > 0
+                    ? `You have ${drafts.length} unfinished ${drafts.length === 1 ? "draft" : "drafts"}`
+                    : "See all your saved drafts"}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={THEME.textMuted} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.modalOptionB, creatingDraft && { opacity: 0.6 }]}
+              onPress={handleStartFresh}
+              disabled={creatingDraft}
+            >
+              <View style={styles.modalOptionIconDark}>
+                {creatingDraft ? (
+                  <ActivityIndicator color="#000" size="small" />
+                ) : (
+                  <MaterialCommunityIcons name="pencil-plus" size={20} color="#000" />
+                )}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modalOptionTitleDark}>Start Fresh</Text>
+                <Text style={styles.modalOptionSubDark}>Begin a brand new book</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color="#00000066" />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalCancel}
+              onPress={() => setShowWriteModal(false)}
+            >
+              <Text style={styles.modalCancelTxt}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -553,25 +620,19 @@ const CARD_WIDTH = (width - 52) / 2;
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: THEME.bg },
   centered: { flex: 1, backgroundColor: THEME.bg, justifyContent: "center", alignItems: "center" },
-
-  // Header
   header: { paddingHorizontal: 20, paddingBottom: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
   headerSmall: { color: THEME.accent, fontSize: 10, fontWeight: "900", letterSpacing: 4 },
   headerTitle: { color: THEME.text, fontSize: 28, fontWeight: "900", marginTop: 4 },
   writeBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accent, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 14 },
   writeBtnTxt: { color: "#000", fontWeight: "900", fontSize: 13 },
-  headerBtns:     { flexDirection: "row", gap: 8, alignItems: "center", paddingHorizontal: 20, paddingBottom: 12 },
-  publishBtn:     { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accentDim, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, borderWidth: 1, borderColor: THEME.accent + "40" },
-  publishBtnTxt:  { color: THEME.accent, fontWeight: "900", fontSize: 13 },
-
-  // Quick stats
+  headerBtns: { flexDirection: "row", gap: 8, alignItems: "center", paddingHorizontal: 20, paddingBottom: 12 },
+  publishBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: THEME.accentDim, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, borderWidth: 1, borderColor: THEME.accent + "40" },
+  publishBtnTxt: { color: THEME.accent, fontWeight: "900", fontSize: 13 },
   quickStatsRow: { flexDirection: "row", marginHorizontal: 16, backgroundColor: THEME.ui, borderRadius: 18, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: THEME.ui2 },
   quickStat: { flex: 1, alignItems: "center" },
   quickStatVal: { color: THEME.text, fontSize: 18, fontWeight: "900" },
   quickStatLbl: { color: THEME.textMuted, fontSize: 9, fontWeight: "700", marginTop: 3, letterSpacing: 0.5 },
   quickStatDivider: { width: 1, backgroundColor: THEME.ui2 },
-
-  // Tabs
   tabScroll: { maxHeight: 60 },
   tabScrollContent: { paddingHorizontal: 16, gap: 8, paddingBottom: 8 },
   tabItem: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, backgroundColor: THEME.ui, borderWidth: 1, borderColor: THEME.ui2 },
@@ -581,11 +642,7 @@ const styles = StyleSheet.create({
   tabBadge: { backgroundColor: THEME.ui2, borderRadius: 8, paddingHorizontal: 5, paddingVertical: 1 },
   tabBadgeActive: { backgroundColor: "rgba(0,0,0,0.2)" },
   tabBadgeTxt: { color: THEME.textMuted, fontSize: 9, fontWeight: "900" },
-
-  // Scroll content
   scrollContent: { paddingHorizontal: 16, paddingTop: 16 },
-
-  // Continue reading banner
   continueBanner: { height: 160, borderRadius: 20, overflow: "hidden", marginBottom: 20, borderWidth: 1, borderColor: THEME.ui2 },
   continueBannerImg: { ...StyleSheet.absoluteFillObject },
   continueBannerGrad: { ...StyleSheet.absoluteFillObject, justifyContent: "flex-end", padding: 16 },
@@ -595,12 +652,10 @@ const styles = StyleSheet.create({
   continueBannerProgressTrack: { flex: 1, height: 4, backgroundColor: "rgba(255,255,255,0.2)", borderRadius: 2 },
   continueBannerProgressFill: { height: "100%", backgroundColor: THEME.accent, borderRadius: 2 },
   continueBannerProgressTxt: { color: THEME.accent, fontSize: 10, fontWeight: "800" },
-
-  // Review info
   reviewInfoBox: { flexDirection: "row", gap: 10, backgroundColor: THEME.accentDim, borderRadius: 14, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: THEME.accent + "30", alignItems: "flex-start" },
   reviewInfoTxt: { color: THEME.textMuted, fontSize: 12, flex: 1, lineHeight: 18 },
-
-  // Book grid
+  goToDraftsBtn: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: THEME.accentDim, borderRadius: 14, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: THEME.accent + "30" },
+  goToDraftsBtnTxt: { flex: 1, color: THEME.accent, fontWeight: "800", fontSize: 13 },
   bookGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
   bookCard: { width: CARD_WIDTH },
   coverWrap: { width: "100%", height: CARD_WIDTH * 1.45, borderRadius: 18, overflow: "hidden", backgroundColor: THEME.ui },
@@ -616,16 +671,12 @@ const styles = StyleSheet.create({
   purchasedBadgeTxt: { color: THEME.green, fontSize: 8, fontWeight: "900" },
   bookTitle: { color: THEME.text, fontWeight: "800", fontSize: 13, marginTop: 10 },
   bookMeta: { color: THEME.textMuted, fontSize: 11, marginTop: 3 },
-
-  // Empty state
   emptyState: { paddingVertical: 60, alignItems: "center" },
   emptyIconCircle: { width: 80, height: 80, borderRadius: 24, backgroundColor: THEME.ui, justifyContent: "center", alignItems: "center", marginBottom: 16, borderWidth: 1, borderColor: THEME.ui2 },
   emptyTitle: { color: THEME.text, fontSize: 18, fontWeight: "800" },
   emptySub: { color: THEME.textMuted, fontSize: 13, marginTop: 8, textAlign: "center", lineHeight: 20, paddingHorizontal: 24 },
   emptyActionBtn: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: THEME.accent, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 14, marginTop: 20 },
   emptyActionBtnTxt: { color: "#000", fontWeight: "900", fontSize: 13 },
-
-  // Stats
   statsSection: { gap: 16 },
   mainStatCard: { borderRadius: 24, overflow: "hidden", borderWidth: 1, borderColor: THEME.ui2 },
   mainStatGradient: { padding: 28, alignItems: "center" },
@@ -650,4 +701,19 @@ const styles = StyleSheet.create({
   perfStatTxt: { color: THEME.textMuted, fontSize: 11 },
   perfBar: { height: 3, backgroundColor: THEME.ui2, borderRadius: 2, marginTop: 8, overflow: "hidden" },
   perfBarFill: { height: "100%", backgroundColor: THEME.accent, borderRadius: 2 },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "flex-end" },
+  modalCard: { backgroundColor: THEME.ui, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24, borderWidth: 1, borderColor: THEME.ui2, gap: 12 },
+  modalIconWrap: { width: 56, height: 56, borderRadius: 18, backgroundColor: THEME.accentDim, justifyContent: "center", alignItems: "center", alignSelf: "center", marginBottom: 4 },
+  modalTitle: { color: THEME.text, fontSize: 20, fontWeight: "900", textAlign: "center" },
+  modalSub: { color: THEME.textMuted, fontSize: 13, textAlign: "center", lineHeight: 20 },
+  modalOptionA: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: THEME.ui2, borderRadius: 18, padding: 16, borderWidth: 1, borderColor: THEME.ui3, marginTop: 4 },
+  modalOptionB: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: THEME.accent, borderRadius: 18, padding: 16 },
+  modalOptionIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: "rgba(255,255,255,0.1)", justifyContent: "center", alignItems: "center" },
+  modalOptionIconDark: { width: 40, height: 40, borderRadius: 12, backgroundColor: "rgba(0,0,0,0.15)", justifyContent: "center", alignItems: "center" },
+  modalOptionTitle: { color: THEME.text, fontWeight: "800", fontSize: 14 },
+  modalOptionSub: { color: THEME.textMuted, fontSize: 11, marginTop: 2 },
+  modalOptionTitleDark: { color: "#000", fontWeight: "800", fontSize: 14 },
+  modalOptionSubDark: { color: "#00000099", fontSize: 11, marginTop: 2 },
+  modalCancel: { alignItems: "center", paddingVertical: 12 },
+  modalCancelTxt: { color: THEME.textMuted, fontWeight: "700", fontSize: 13 },
 });

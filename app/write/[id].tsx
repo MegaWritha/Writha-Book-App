@@ -67,81 +67,67 @@ export default function WrithaEditor() {
     status: "draft" as "draft" | "submitted" | "published",
   });
 
-  // ── LOAD EXISTING BOOK ────────────────────────────────────────────────
+  // ── LOAD EXISTING DRAFT ───────────────────────────────────────────────
+  // write/[id] only ever opens an existing draft — creation happens in
+  // drafts/index.tsx and library.tsx. If no valid id, go back to drafts.
   useEffect(() => {
-    if (id && id !== "new") {
-      const load = async () => {
-        try {
-          const snap = await getDoc(doc(db, "books", id as string));
-          if (snap.exists()) {
-            const data = snap.data();
-            setForm((prev) => ({ ...prev, ...data }));
-          }
-        } catch {
-          Alert.alert("Error", "Could not load this book.");
-        } finally {
-          setInitialSync(false);
-        }
-      };
-      load();
-    } else {
-      setInitialSync(false);
+    if (!id || id === "new") {
+      router.replace("/drafts" as any);
+      return;
     }
+
+    const load = async () => {
+      try {
+        const snap = await getDoc(doc(db, "books", id as string));
+        if (snap.exists()) {
+          const data = snap.data();
+          setForm((prev) => ({ ...prev, ...data }));
+        } else {
+          Alert.alert("Not Found", "This draft no longer exists.");
+          router.replace("/drafts" as any);
+        }
+      } catch {
+        Alert.alert("Error", "Could not load this draft.");
+        router.replace("/drafts" as any);
+      } finally {
+        setInitialSync(false);
+      }
+    };
+
+    load();
   }, [id]);
 
-  // ── FIXED AUTOSAVE (WORKING) ─────────────────────────────────────────
-useEffect(() => {
-  if (!form.title.trim() || !user || initialSync) return;
+  // ── AUTOSAVE ──────────────────────────────────────────────────────────
+  // Only updates — never creates. Draft must already exist in Firestore.
+  useEffect(() => {
+    if (!user || initialSync || !id || id === "new") return;
+    if (!form.title.trim() && !form.content.trim()) return;
 
-  if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
 
-  autoSaveTimer.current = setTimeout(async () => {
-    try {
-      let docId = id as string;
-
-      // 🔥 CREATE NEW DRAFT ONLY ONCE
-      if (!id || id === "new") {
-        docId = `draft_${user.uid}_${Date.now()}`;
-
+    autoSaveTimer.current = setTimeout(async () => {
+      try {
         await setDoc(
-          doc(db, "books", docId),
+          doc(db, "books", id as string),
           {
             ...form,
             authorId: user.uid,
-            createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
+            coverLocalUri: null,
+            fileUri: null,
           },
           { merge: true }
         );
-
-        router.replace(`/write/${docId}`);
-
         setLastSaved(new Date());
-        return;
+      } catch (e) {
+        console.error("Autosave failed:", e);
       }
+    }, 15000);
 
-      // UPDATE EXISTING DRAFT
-      await setDoc(
-        doc(db, "books", docId),
-        {
-          ...form,
-          authorId: user.uid,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-
-      setLastSaved(new Date());
-
-    } catch (e) {
-      console.error("Autosave failed:", e);
-    }
-  }, 20000);
-
-  return () => {
-    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-  };
-}, [form, id, initialSync]);
+    return () => {
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    };
+  }, [form, id, initialSync]);
 
   // ── COVER IMAGE PICKER ────────────────────────────────────────────────
   const pickCover = async () => {
@@ -229,10 +215,7 @@ useEffect(() => {
       const response = await fetch(form.fileUri);
       const blob = await response.blob();
       const ext = form.fileName?.split(".").pop() || "pdf";
-      const storageRef = ref(
-        storage,
-        `manuscripts/${user!.uid}/${Date.now()}.${ext}`
-      );
+      const storageRef = ref(storage, `manuscripts/${user!.uid}/${Date.now()}.${ext}`);
       await uploadBytes(storageRef, blob);
       const url = await getDownloadURL(storageRef);
       return url;
@@ -247,25 +230,22 @@ useEffect(() => {
   // ── SAVE / SUBMIT ─────────────────────────────────────────────────────
   const handleSave = async (status: "submitted" | "draft") => {
     if (!user) return Alert.alert("Error", "Not logged in.");
+    if (!id || id === "new") return Alert.alert("Error", "No draft to save.");
 
     if (status === "submitted") {
       if (!form.title.trim())
         return Alert.alert("Required", "Add a title.");
       if (form.mode === "write") {
-  const wordCount = form.content.trim().split(/\s+/).filter(Boolean).length;
-  if (wordCount < 500) {
-    return Alert.alert(
-      "Too Short",
-      `Your manuscript is ${wordCount} words. A publishable book should be at least 500 words.`
-    );
-  }
-}
-
-      if (form.mode === "upload" && !form.fileUri && !form.fileUrl) {
-        return Alert.alert("No Manuscript", "Please upload your manuscript file.");
-    }
+        const wordCount = form.content.trim().split(/\s+/).filter(Boolean).length;
+        if (wordCount < 500) {
+          return Alert.alert(
+            "Too Short",
+            `Your manuscript is ${wordCount} words. A publishable book should be at least 500 words.`
+          );
+        }
+      }
       if (form.mode === "upload" && !form.fileUri && !form.fileUrl)
-        return Alert.alert("Required", "Upload your manuscript file.");
+        return Alert.alert("No Manuscript", "Please upload your manuscript file.");
       if (!form.isOriginal)
         return Alert.alert("Required", "Confirm originality in the Legal tab.");
     } else {
@@ -275,37 +255,27 @@ useEffect(() => {
 
     setLoading(true);
     try {
-      // Upload cover if it's a local URI
       const finalCover = form.coverLocalUri ? await uploadCover() : form.coverUrl || "";
-
-      // Upload manuscript file if local
-      const finalFileUrl =
-        form.mode === "upload" ? await uploadManuscriptFile() : null;
-
-      const docId =
-        id && id !== "new"
-          ? (id as string)
-          : `book_${user.uid}_${Date.now()}`;
+      const finalFileUrl = form.mode === "upload" ? await uploadManuscriptFile() : null;
 
       await setDoc(
-        doc(db, "books", docId),
+        doc(db, "books", id as string),
         {
           ...form,
           cover: finalCover,
           coverUrl: finalCover,
           fileUrl: finalFileUrl || form.fileUrl,
-          coverLocalUri: null, // don't persist local URI
-          fileUri: null,       // don't persist local URI
+          coverLocalUri: null,
+          fileUri: null,
           authorId: user.uid,
           authorName: user.displayName || "Author",
           status,
-          views: 0,
-          likesCount: 0,
-          commentsCount: 0,
-          likedBy: [],
-          purchasedBy: [],
+          views: form.status === "draft" ? 0 : undefined,
+          likesCount: form.status === "draft" ? 0 : undefined,
+          commentsCount: form.status === "draft" ? 0 : undefined,
+          likedBy: form.status === "draft" ? [] : undefined,
+          purchasedBy: form.status === "draft" ? [] : undefined,
           updatedAt: serverTimestamp(),
-          createdAt: serverTimestamp(),
         },
         { merge: true }
       );
@@ -314,14 +284,14 @@ useEffect(() => {
 
       if (status === "submitted") {
         Alert.alert(
-          "Submitted! 🎓",
+          "Submitted! 🎉",
           "Your manuscript is in the editorial queue. You'll be notified when approved.",
           [{ text: "Go to Library", onPress: () => router.replace("/(tabs)/library" as any) }]
         );
       } else {
-        Alert.alert("Draft Saved ✅", "Saved to your library drafts.", [
+        Alert.alert("Draft Saved ✅", "Saved to your drafts.", [
           { text: "Keep Writing" },
-          { text: "Go to Library", onPress: () => router.replace("/(tabs)/library" as any) },
+          { text: "Go to Drafts", onPress: () => router.replace("/drafts" as any) },
         ]);
       }
     } catch (err: any) {
@@ -345,7 +315,7 @@ useEffect(() => {
           onPress: async () => {
             try {
               await deleteDoc(doc(db, "books", id as string));
-              router.replace("/(tabs)/library" as any);
+              router.replace("/drafts" as any);
             } catch {
               Alert.alert("Error", "Could not delete.");
             }
@@ -375,17 +345,13 @@ useEffect(() => {
     );
   }
 
-  // ── RENDER ────────────────────────────────────────────────────────────
   return (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <StatusBar barStyle="light-content" />
-      <LinearGradient
-        colors={["#0F071A", THEME.bg]}
-        style={StyleSheet.absoluteFill}
-      />
+      <LinearGradient colors={["#0F071A", THEME.bg]} style={StyleSheet.absoluteFill} />
 
       {/* TOOLBAR */}
       <View style={[styles.toolbar, { paddingTop: insets.top + 10 }]}>
@@ -394,19 +360,18 @@ useEffect(() => {
           onPress={() => {
             if (form.title) {
               Alert.alert("Save before leaving?", "", [
-                { text: "Discard", style: "destructive", onPress: () => router.back() },
+                { text: "Discard", style: "destructive", onPress: () => router.replace("/drafts" as any) },
                 { text: "Save Draft", onPress: () => handleSave("draft") },
                 { text: "Cancel", style: "cancel" },
               ]);
             } else {
-              router.back();
+              router.replace("/drafts" as any);
             }
           }}
         >
           <Ionicons name="close" size={22} color={THEME.text} />
         </TouchableOpacity>
 
-        {/* TABS */}
         <View style={styles.tabContainer}>
           {(["Editor", "Metadata", "Legal"] as const).map((tab) => (
             <TouchableOpacity
@@ -439,7 +404,7 @@ useEffect(() => {
         <View style={styles.autosaveBanner}>
           <Ionicons name="cloud-done-outline" size={12} color={THEME.green} />
           <Text style={styles.autosaveTxt}>
-            Auto-saved at{" "}
+            Saved at{" "}
             {lastSaved.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </Text>
         </View>
@@ -450,7 +415,6 @@ useEffect(() => {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-
         {/* ── EDITOR TAB ── */}
         {activeTab === "Editor" && (
           <View style={styles.pane}>
@@ -469,7 +433,6 @@ useEffect(() => {
               onChangeText={(t) => setForm({ ...form, subtitle: t })}
             />
 
-            {/* MODE SWITCH */}
             <View style={styles.modeSwitch}>
               <TouchableOpacity
                 onPress={() => setForm({ ...form, mode: "write" })}
@@ -499,10 +462,8 @@ useEffect(() => {
               </TouchableOpacity>
             </View>
 
-            {/* WRITE MODE */}
             {form.mode === "write" && (
               <>
-                {/* Word count bar */}
                 <View style={styles.wordCountRow}>
                   <Text style={styles.wordCountTxt}>{wordCount} words</Text>
                   <Text style={[
@@ -513,7 +474,7 @@ useEffect(() => {
                   </Text>
                 </View>
                 <TextInput
-                  placeholder={"Once upon a time...\n\nTip: Your work is auto-saved every 20 seconds."}
+                  placeholder={"Once upon a time...\n\nYour work is auto-saved every 15 seconds."}
                   placeholderTextColor={THEME.textMuted}
                   style={styles.editorBody}
                   multiline
@@ -525,7 +486,6 @@ useEffect(() => {
               </>
             )}
 
-            {/* UPLOAD MODE */}
             {form.mode === "upload" && (
               <View>
                 <View style={styles.uploadInfoBox}>
@@ -549,9 +509,7 @@ useEffect(() => {
                       <Text style={styles.fileSuccessName} numberOfLines={1}>
                         {form.fileName}
                       </Text>
-                      <Text style={styles.fileSuccessSub}>
-                        Tap to change file
-                      </Text>
+                      <Text style={styles.fileSuccessSub}>Tap to change file</Text>
                       <View style={styles.fileSuccessBadge}>
                         <Ionicons name="checkmark-circle" size={14} color={THEME.green} />
                         <Text style={styles.fileSuccessBadgeTxt}>File Ready</Text>
@@ -578,8 +536,6 @@ useEffect(() => {
         {/* ── METADATA TAB ── */}
         {activeTab === "Metadata" && (
           <View style={styles.pane}>
-
-            {/* COVER IMAGE */}
             <Text style={styles.fieldTag}>COVER IMAGE</Text>
             <View style={styles.coverRow}>
               <TouchableOpacity
@@ -621,7 +577,6 @@ useEffect(() => {
               </View>
             </View>
 
-            {/* GENRE */}
             <Text style={styles.fieldTag}>GENRE / CATEGORY</Text>
             <TextInput
               style={styles.fieldIn}
@@ -631,7 +586,6 @@ useEffect(() => {
               onChangeText={(t) => setForm({ ...form, genre: t })}
             />
 
-            {/* TAGS */}
             <Text style={styles.fieldTag}>TAGS</Text>
             <TextInput
               style={styles.fieldIn}
@@ -641,7 +595,6 @@ useEffect(() => {
               onChangeText={(t) => setForm({ ...form, tags: t })}
             />
 
-            {/* DESCRIPTION */}
             <Text style={styles.fieldTag}>SYNOPSIS / BLURB</Text>
             <TextInput
               style={styles.blurbArea}
@@ -653,7 +606,6 @@ useEffect(() => {
               textAlignVertical="top"
             />
 
-            {/* PREMIUM */}
             <View style={styles.settingRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.settingTitle}>Premium / Paid Content</Text>
@@ -680,7 +632,6 @@ useEffect(() => {
               </View>
             )}
 
-            {/* MATURE */}
             <View style={styles.settingRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.settingTitle}>Mature Content (18+)</Text>
@@ -701,9 +652,7 @@ useEffect(() => {
           <View style={styles.pane}>
             <View style={styles.legalHeaderBox}>
               <FontAwesome5 name="shield-alt" size={40} color={THEME.accent} />
-              <Text style={styles.legalMainTitle}>
-                INTELLECTUAL PROPERTY GUARD
-              </Text>
+              <Text style={styles.legalMainTitle}>INTELLECTUAL PROPERTY GUARD</Text>
             </View>
 
             <Text style={styles.legalBody}>
@@ -720,13 +669,10 @@ useEffect(() => {
               {"\n"}All submissions undergo editorial review before going live. This typically takes 24–48 hours. You will be notified of the outcome.
             </Text>
 
-            {/* ORIGINAL WORK TOGGLE */}
             <View style={styles.legalToggleRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.legalItemH}>✍️ Original Work Certification</Text>
-                <Text style={styles.legalItemS}>
-                  I certify this manuscript is entirely my own creation.
-                </Text>
+                <Text style={styles.legalItemS}>I certify this manuscript is entirely my own creation.</Text>
               </View>
               <Switch
                 value={form.isOriginal}
@@ -736,13 +682,10 @@ useEffect(() => {
               />
             </View>
 
-            {/* MATURE TOGGLE */}
             <View style={styles.legalToggleRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.legalItemH}>🔞 Mature Content (18+)</Text>
-                <Text style={styles.legalItemS}>
-                  This work contains adult themes, language, or content.
-                </Text>
+                <Text style={styles.legalItemS}>This work contains adult themes, language, or content.</Text>
               </View>
               <Switch
                 value={form.isMature}
@@ -752,7 +695,6 @@ useEffect(() => {
               />
             </View>
 
-            {/* DELETE */}
             {id && id !== "new" && (
               <TouchableOpacity style={styles.dangerZone} onPress={handleDelete}>
                 <Ionicons name="trash-outline" size={16} color={THEME.red} />
